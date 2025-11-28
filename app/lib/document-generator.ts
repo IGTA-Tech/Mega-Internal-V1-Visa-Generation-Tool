@@ -177,6 +177,8 @@ export interface GenerationResult {
   document8: string; // Exhibit Assembly Guide (NEW)
   urlsAnalyzed: FetchedUrlData[];
   filesProcessed: number;
+  // NOTE: Exhibits are generated separately via generateExhibitPackage()
+  // after user reviews documents and chooses to generate them
 }
 
 async function processUploadedFiles(files: UploadedFileData[]): Promise<string> {
@@ -319,6 +321,8 @@ export async function generateAllDocuments(
     onProgress
   );
 
+  // NOTE: Exhibits are generated SEPARATELY after documents are complete
+  // User will have option to generate exhibits after reviewing documents
   onProgress?.('Complete', 100, 'All 8 documents generated successfully!');
 
   return {
@@ -469,15 +473,35 @@ async function generatePublicationAnalysis(
   urls: FetchedUrlData[],
   comprehensiveAnalysis: string
 ): Promise<string> {
-  const urlDetails = urls
+  // Smart filtering: Focus on up to 60 most relevant URLs
+  // Prioritize by tier quality and content relevance
+  let relevantUrls = urls;
+  if (urls.length > 60) {
+    // Sort by tier (lower tier number = higher quality) and take top 60
+    const sortedByQuality = [...urls].sort((a, b) => {
+      const qualityA = analyzePublicationQuality(a.domain);
+      const qualityB = analyzePublicationQuality(b.domain);
+      return qualityA.tier - qualityB.tier;
+    });
+    relevantUrls = sortedByQuality.slice(0, 60);
+    console.log(`Filtered ${urls.length} URLs down to top 60 by publication quality`);
+  }
+
+  // Categorize URLs by tier for analysis
+  const tier1Urls = relevantUrls.filter(url => analyzePublicationQuality(url.domain).tier === 1);
+  const tier2Urls = relevantUrls.filter(url => analyzePublicationQuality(url.domain).tier === 2);
+  const tier3Urls = relevantUrls.filter(url => analyzePublicationQuality(url.domain).tier === 3);
+
+  const urlDetails = relevantUrls
     .map((url, i) => {
       const quality = analyzePublicationQuality(url.domain);
       return `URL ${i + 1}:
 - Link: ${url.url}
 - Domain: ${url.domain}
 - Title: ${url.title}
-- Tier: ${quality.tier}
+- Tier: ${quality.tier} (${quality.tier === 1 ? 'Gold Standard' : quality.tier === 2 ? 'Strong/Industry' : 'Supplementary'})
 - Estimated Reach: ${quality.estimatedReach}
+- Publication Type: ${quality.publicationType || 'General'}
 - Content Preview: ${url.content.substring(0, 1500)}...
 `;
     })
@@ -487,6 +511,40 @@ async function generatePublicationAnalysis(
 
 BENEFICIARY: ${beneficiaryInfo.fullName}
 FIELD: ${beneficiaryInfo.fieldOfProfession}
+
+## PUBLICATION TIER BREAKDOWN (Total: ${relevantUrls.length} sources):
+- **Tier 1 (Gold Standard)**: ${tier1Urls.length} sources - ESPN, BBC, CNN, NYT, major sports networks
+- **Tier 2 (Strong/Industry)**: ${tier2Urls.length} sources - Trade publications, official league sites, industry databases
+- **Tier 3 (Supplementary)**: ${tier3Urls.length} sources - Regional media, niche publications, established blogs
+
+## TIER QUALITY STANDARDS:
+
+**TIER 1 - GOLD STANDARD** (Weight: Premium)
+- Major international/national media: ESPN, BBC, CNN, NYT, WSJ, Reuters, USA Today
+- Major sports networks: Fox Sports, NBC Sports, CBS Sports
+- Reach: Millions (national/international audiences)
+- Use: Primary evidence, strongest weight
+
+**TIER 2 - STRONG/INDUSTRY** (Weight: High)
+- Official league/federation sources: UFC.com, NBA.com, FIFA.com
+- Industry publications: MMA Junkie (USA Today Sports), Sherdog, Tapology
+- Regional major outlets: LA Times, Chicago Tribune
+- Reach: Hundreds of thousands (industry-specific)
+- Use: Strong supporting evidence
+
+**TIER 3 - SUPPLEMENTARY** (Weight: Moderate)
+- Niche publications with editorial standards
+- Established blogs and specialist sites
+- Local newspapers
+- Reach: Thousands to tens of thousands
+- Use: Supporting context, not primary evidence
+
+**CRITICAL ANALYSIS RULES**:
+1. **Focus on Tier 1-2 sources** - These carry the most weight with USCIS
+2. **Be realistic** - Don't overstate Tier 3 sources
+3. **Aggregate reach sensibly** - Account for audience overlap
+4. **Quality > Quantity** - 3 Tier 1 sources > 20 Tier 3 sources
+5. **Stay grounded** - Use reasonable estimates, not inflated numbers
 
 PUBLICATIONS/MEDIA TO ANALYZE:
 ${urlDetails}
@@ -553,23 +611,72 @@ For EACH URL provided:
 ### PART 5: USCIS STANDARDS ANALYSIS
 [How this coverage meets USCIS requirements for ${beneficiaryInfo.visaType}]
 
-### PART 6: CONCLUSIONS
-[Overall assessment of media presence and its strength for the petition]
+### PART 6: TIER-BASED CUMULATIVE ANALYSIS
+
+**Publication Count by Tier:**
+| Tier | Count | Quality Level | Example Sources |
+|------|-------|---------------|-----------------|
+| Tier 1 | ${tier1Urls.length} | Gold Standard | ESPN, BBC, CNN, NYT |
+| Tier 2 | ${tier2Urls.length} | Strong/Industry | UFC.com, Sherdog, MMA Junkie |
+| Tier 3 | ${tier3Urls.length} | Supplementary | Regional media, niche sites |
+| **Total** | **${relevantUrls.length}** | | |
+
+**Tier 1 Analysis (Highest Weight):**
+- List and analyze all Tier 1 sources in detail
+- Combined reach: [Estimate total reach with overlap consideration]
+- Why these matter most for USCIS
+- Mainstream vs niche coverage
+
+**Tier 2 Analysis (Strong Supporting Evidence):**
+- Analyze industry-specific and official sources
+- Authority in the field
+- Combined reach within industry
+- Credibility with USCIS
+
+**Tier 3 Analysis (Supplementary Context):**
+- Brief overview of supplementary sources
+- Provide context but don't overemphasize
+- Combined reach estimate (realistic)
+
+**Aggregate Reach Calculation (REALISTIC ESTIMATES):**
+- Account for audience overlap between sources
+- Focus on NET unique reach
+- Conservative vs aggressive estimates
+- Geographic distribution breakdown
+
+**Quality vs Quantity Assessment:**
+Compare beneficiary's coverage profile:
+- Is it top-heavy (mostly Tier 1-2)? → STRONG
+- Is it bottom-heavy (mostly Tier 3)? → NEEDS WORK
+- Balanced mix? → EVALUATE TIER 1-2 DEPTH
+
+### PART 7: CONCLUSIONS
+[Overall assessment emphasizing Tier 1-2 sources, realistic reach estimates, and quality over quantity]
 
 CRITICAL REQUIREMENTS:
 - **LENGTH**: This MUST be a COMPREHENSIVE 40+ PAGE document (~20,000+ words)
-- **DETAIL LEVEL**: Each publication analysis should be 2-4 pages with extensive detail
+- **TIER-BASED APPROACH**:
+  * Tier 1 sources get 2-4 pages each (most important)
+  * Tier 2 sources get 1-2 pages each (strong supporting)
+  * Tier 3 sources get 0.5-1 page each (contextual overview)
+- **REALISTIC REACH ESTIMATES**: Use reasonable, verifiable numbers
+  * ESPN: ~150M monthly visitors (verifiable via SimilarWeb)
+  * UFC.com: ~50M monthly (verifiable)
+  * Regional outlets: Thousands to hundreds of thousands
+  * DO NOT inflate numbers - be conservative and credible
+- **FOCUS ON QUALITY**: Emphasize strength of Tier 1-2 sources
+- **AGGREGATE REACH**: Account for audience overlap (ESPN fans likely also visit UFC.com)
+- **SMART FILTERING**: Already limited to top ${relevantUrls.length} most relevant sources
+- **BALANCED ANALYSIS**: If mostly Tier 3 sources, acknowledge this as a limitation
 - Write in COMPLETE, DETAILED paragraphs with thorough analysis
-- Analyze EVERY single URL in exhaustive detail (not brief summaries)
-- Research actual circulation/traffic data - be specific with numbers
+- Each Tier 1 publication deserves 2-4 pages of detailed assessment
+- Tier 2-3 publications can be more concise but still substantive
 - Provide detailed publication quality assessments with justification
-- Calculate precise aggregate reach with methodology
-- Include extensive comparative analysis to field norms
-- Each publication deserves 2-3 pages of detailed assessment
+- Include comparative analysis to field norms
 
-**OUTPUT FORMAT**: Generate the FULL, UNABBREVIATED document. Do NOT summarize. Write as if this is the complete final document for attorney review.
+**OUTPUT FORMAT**: Generate the FULL, UNABBREVIATED document. Prioritize analysis of Tier 1-2 sources. Do NOT summarize top-tier publications. Be realistic about reach estimates.
 
-Generate the COMPLETE publication analysis now (aim for maximum detail and length):`;
+Generate the COMPLETE publication analysis now (emphasizing tier-based quality assessment):`;
 
   const response = await retryWithBackoff(() =>
     anthropic.messages.create({
@@ -686,6 +793,10 @@ async function generateLegalBrief(
   const criteria = getCriteriaForVisaType(beneficiaryInfo.visaType);
   const hasComparable = hasComparableEvidenceProvision(beneficiaryInfo.visaType);
   const comparableCFR = getComparableEvidenceCFR(beneficiaryInfo.visaType);
+
+  // Determine brief type (default to comprehensive for backwards compatibility)
+  const briefType = beneficiaryInfo.briefType || 'comprehensive';
+  const isStandard = briefType === 'standard';
 
   // Build criterion-specific template instructions
   let criterionTemplates = '';
@@ -923,7 +1034,25 @@ Respectfully submitted,
 
 ## CRITICAL REQUIREMENTS - ENFORCE STRICTLY:
 
-1. **LENGTH**: This MUST be a COMPREHENSIVE 30-50 PAGE legal brief (~20,000-25,000 words)
+**BRIEF TYPE**: ${isStandard ? 'STANDARD (15-20 pages, focused)' : 'COMPREHENSIVE (30-50 pages, extensive)'}
+
+${isStandard ? `
+### STANDARD BRIEF REQUIREMENTS:
+1. **LENGTH**: 15-20 PAGE focused legal brief (~8,000-10,000 words)
+2. **DETAIL LEVEL**: Each criterion gets 1-2 pages of focused analysis
+3. **FOCUS**: Cover the strongest 3-5 criteria in depth
+4. **EFFICIENCY**: Clear, concise arguments without excessive detail
+5. **TEMPLATE**: Still follow DIY template structure exactly
+` : `
+### COMPREHENSIVE BRIEF REQUIREMENTS:
+1. **LENGTH**: 30-50 PAGE extensive legal brief (~20,000-25,000 words)
+2. **DETAIL LEVEL**: Each criterion gets 3-5 pages of detailed analysis
+3. **BREADTH**: Cover ALL applicable criteria thoroughly
+4. **DEPTH**: Extensive evidence analysis, comparisons, case law
+5. **TOKEN USAGE**: Use ALL allocated tokens - do not truncate
+`}
+
+**UNIVERSAL REQUIREMENTS** (Both Standard and Comprehensive):
 2. **TEMPLATE ADHERENCE**: EVERY criterion MUST follow the exact DIY template structure above
 3. **CHECKBOX FORMAT**: Never skip the ☐ Yes/No checkboxes
 4. **CFR CITATIONS**: All citations must be bold and exact: **8 CFR § X.X(x)(x)(x)**
@@ -931,17 +1060,19 @@ Respectfully submitted,
 6. **COMPARABLE EVIDENCE**: ${hasComparable ? `MUST be included for ALL criteria` : `MUST NOT be included (not available for ${beneficiaryInfo.visaType})`}
 7. **CONSIDERATION OF EVIDENCE**: Must end EVERY criterion
 8. **SPECIFIC EVIDENCE**: Reference actual exhibits, not vague statements
-9. **TOKEN USAGE**: Use ALL allocated tokens - do not truncate
-10. **NO SUMMARIES**: Write complete, detailed analysis for each criterion
+9. **NO SUMMARIES**: Write complete analysis for each criterion covered
 
-**OUTPUT FORMAT**: Generate the FULL, UNABBREVIATED legal brief following the DIY template structure EXACTLY. This is a formal USCIS petition document.
+**OUTPUT FORMAT**: Generate the ${isStandard ? 'FOCUSED, EFFICIENT' : 'FULL, UNABBREVIATED'} legal brief following the DIY template structure EXACTLY. This is a formal USCIS petition document.
 
 Generate the COMPLETE legal brief now:`;
+
+  // Adjust max_tokens based on brief type
+  const maxTokens = isStandard ? 16000 : 32000; // Standard: 16K, Comprehensive: 32K
 
   const response = await retryWithBackoff(() =>
     anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 32000, // Maximum tokens for DIY template-compliant legal brief
+      max_tokens: maxTokens,
       temperature: 0.2, // Lower temperature for strict template adherence
       messages: [
         {

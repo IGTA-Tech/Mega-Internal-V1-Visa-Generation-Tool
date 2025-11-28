@@ -2,10 +2,14 @@
 
 export type VisaType = 'O-1A' | 'O-1B' | 'P-1A' | 'EB-1A';
 
+export type BriefType = 'standard' | 'comprehensive';
+
 export interface BeneficiaryInfo {
   fullName: string;
   profession: string;
   visaType: VisaType;
+  briefType?: BriefType; // Standard (15-20 pages) or Comprehensive (30-50 pages)
+  generateExhibits?: boolean; // Whether to generate exhibit PDFs at the end
   nationality?: string;
   currentStatus?: string;
   fieldOfExpertise?: string;
