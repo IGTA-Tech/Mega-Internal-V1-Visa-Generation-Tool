@@ -3,6 +3,8 @@ import { BeneficiaryInfo, VisaType, UploadedFileData } from '../types';
 import { getKnowledgeBaseFiles, buildKnowledgeBaseContext } from './knowledge-base';
 import { fetchMultipleUrls, FetchedUrlData, analyzePublicationQuality } from './url-fetcher';
 import { processFile, generateFileEvidenceSummary } from './file-processor';
+import { conductPerplexityResearch, ResearchResult } from './perplexity-research';
+import { getCFRSection, getCriteriaForVisaType, hasComparableEvidenceProvision, getComparableEvidenceCFR } from './criterion-templates';
 import axios from 'axios';
 
 const anthropic = new Anthropic({
@@ -18,6 +20,118 @@ const anthropic = new Anthropic({
     timeout: 300000,
   }),
 });
+
+// ============================================
+// DIY TEMPLATE ENFORCEMENT SYSTEM PROMPT
+// ============================================
+
+const TEMPLATE_ENFORCEMENT_SYSTEM_PROMPT = `
+# MANDATORY TEMPLATE ADHERENCE INSTRUCTIONS
+
+You are generating a legal immigration petition document. You MUST follow the DIY template structure EXACTLY. There is NO flexibility on this.
+
+## STRUCTURE REQUIREMENTS FOR EACH CRITERION
+
+### REQUIRED ELEMENT 1: Criterion Header with Checkboxes
+ALWAYS begin each criterion with:
+\`\`\`
+### **Criterion Number [X]: [Full Official Name from CFR]**
+
+☐ **Yes**, the Beneficiary is pursuing qualification under this criterion.
+☐ **No**, the Beneficiary is not pursuing qualification under this criterion.
+\`\`\`
+
+### REQUIRED ELEMENT 2: Regulatory Standard Block
+ALWAYS include immediately after header:
+\`\`\`
+#### **Regulatory Standard**
+
+Under **[exact CFR citation]**, [verbatim regulatory language]. This evidence must establish:
+
+1. [First regulatory element]
+2. [Second regulatory element]
+[etc.]
+\`\`\`
+
+### REQUIRED ELEMENT 3: Establishment of Elements in Evidence
+ALWAYS include with numbered points matching regulatory elements:
+\`\`\`
+---
+
+**Establishment of Elements in Evidence**
+
+The Beneficiary satisfies this criterion, as the evidence provided establishes the following:
+
+1. **[Element from Regulatory Standard]**: [Specific evidence with exhibit reference]
+2. **[Element from Regulatory Standard]**: [Specific evidence with exhibit reference]
+[etc.]
+
+The evidence supporting these elements includes [specific exhibits]. All relevant supporting materials have been included as exhibits in this petition.
+\`\`\`
+
+### REQUIRED ELEMENT 4: Comparable Evidence Theory (O-1A, O-1B, EB-1A ONLY)
+For O-1A, O-1B, and EB-1A ONLY, ALWAYS include:
+\`\`\`
+---
+
+**Comparable Evidence Theory**
+
+☐ **Yes**, this criterion is being considered under the comparable evidence theory.
+☐ **No**, this criterion is not being considered under the comparable evidence theory.
+
+If "Yes," the following USCIS language applies:
+When the standard evidentiary requirements described in **[criterion CFR]** do not readily apply to the Beneficiary's field, the Petitioner may submit comparable evidence under **[comparable evidence CFR]**. Comparable evidence must demonstrate that the Beneficiary's achievements or recognition are of comparable significance to [criterion standard].
+
+---
+
+**Explanation of Comparable Evidence**
+
+This space is provided to explain why the standard evidentiary criteria for [criterion name] do not readily apply to the Beneficiary's field and to demonstrate how the submitted evidence is of comparable significance:
+
+[Detailed explanation - minimum 2 paragraphs explaining:
+1. WHY the standard criterion doesn't apply to this field
+2. WHAT evidence is being submitted as comparable
+3. HOW this evidence demonstrates comparable significance]
+
+---
+\`\`\`
+
+**CRITICAL**: NEVER include Comparable Evidence section for P-1A or P-1B petitions.
+
+### REQUIRED ELEMENT 5: Consideration of Evidence Closing
+ALWAYS end each criterion with:
+\`\`\`
+---
+
+**Consideration of Evidence**
+
+Evidence for this criterion, including comparable evidence (if applicable), has been included in this petition.
+
+All relevant evidence provided in this petition establishes that the Beneficiary has met the regulatory requirements under **[criterion CFR]**. The adjudicating officer is requested to consider all submitted materials and, if applicable, evaluate the evidence under the comparable evidence standard per **[comparable evidence CFR]**.
+
+**Citation**: This section aligns with **[criterion CFR]** and **[comparable evidence CFR if applicable]**, which govern the requirements and flexibility for demonstrating [criterion description].
+\`\`\`
+
+## PROHIBITED BEHAVIORS
+
+1. **NEVER** skip the checkbox format
+2. **NEVER** use vague language like "the beneficiary is recognized" without specific evidence
+3. **NEVER** omit the Comparable Evidence section for O-1A, O-1B, or EB-1A
+4. **NEVER** include Comparable Evidence section for P-1A or P-1B
+5. **NEVER** truncate the Consideration of Evidence closing
+6. **NEVER** use incorrect CFR citations
+7. **NEVER** skip numbered elements in the Establishment of Elements section
+8. **NEVER** fail to reference specific exhibits
+
+## TOKEN ALLOCATION
+
+You have been allocated maximum tokens for this document. USE THEM ALL.
+- Each criterion should be 3-5 pages minimum
+- The Establishment of Elements section should be detailed and evidence-rich
+- The Comparable Evidence explanation (when applicable) should be 2-3 paragraphs minimum
+- Do NOT summarize. Do NOT abbreviate. Do NOT take shortcuts.
+`;
+
 
 type ProgressCallback = (stage: string, progress: number, message: string) => void;
 
@@ -89,21 +203,51 @@ export async function generateAllDocuments(
   beneficiaryInfo: BeneficiaryInfo,
   onProgress?: (stage: string, progress: number, message: string) => void
 ): Promise<GenerationResult> {
-  // Stage 1: Read Knowledge Base (10%)
-  onProgress?.('Reading Knowledge Base', 10, 'Loading visa petition knowledge base files...');
+  // Stage 1: Read Knowledge Base (5%)
+  onProgress?.('Reading Knowledge Base', 5, 'Loading visa petition knowledge base files...');
   const knowledgeBaseFiles = await getKnowledgeBaseFiles(beneficiaryInfo.visaType);
   const knowledgeBaseContext = buildKnowledgeBaseContext(knowledgeBaseFiles, beneficiaryInfo.visaType);
 
-  // Stage 2: Process Uploaded Files (15%)
-  onProgress?.('Processing Uploaded Files', 15, 'Extracting text from uploaded documents...');
+  // Stage 2: Process Uploaded Files (10%)
+  onProgress?.('Processing Uploaded Files', 10, 'Extracting text from uploaded documents...');
   const fileEvidence = await processUploadedFiles(beneficiaryInfo.uploadedFiles || []);
 
-  // Stage 3: Fetch URLs (20%)
-  onProgress?.('Analyzing URLs', 20, 'Fetching and analyzing evidence URLs...');
-  const urlsAnalyzed = await fetchMultipleUrls(beneficiaryInfo.primaryUrls);
+  // Stage 3: Conduct Perplexity Research (15-20%) - NEW!
+  let allUrls = beneficiaryInfo.primaryUrls || [];
+  let perplexityResearch: ResearchResult | null = null;
 
-  // Stage 3: Generate Document 1 - Comprehensive Analysis (40%)
-  onProgress?.('Generating Comprehensive Analysis', 30, 'Creating 75+ page comprehensive analysis...');
+  if (process.env.PERPLEXITY_API_KEY && allUrls.length > 0) {
+    onProgress?.('Perplexity Research', 15, 'Conducting deep research to discover additional sources...');
+
+    try {
+      perplexityResearch = await conductPerplexityResearch(beneficiaryInfo, onProgress);
+
+      // Add discovered URLs to the list
+      const discoveredUrls = perplexityResearch.discoveredSources.map(s => s.url);
+      allUrls = [...allUrls, ...discoveredUrls];
+
+      // Deduplicate URLs
+      allUrls = Array.from(new Set(allUrls));
+
+      onProgress?.(
+        'Perplexity Research',
+        20,
+        `Found ${perplexityResearch.totalSourcesFound} additional sources (${perplexityResearch.tier1Count} Tier 1, ${perplexityResearch.tier2Count} Tier 2)`
+      );
+    } catch (error) {
+      console.error('Perplexity research failed, continuing with initial URLs:', error);
+      onProgress?.('Perplexity Research', 20, 'Using initial URLs only');
+    }
+  } else {
+    onProgress?.('Perplexity Research', 20, 'Skipped (no Perplexity API key or initial URLs)');
+  }
+
+  // Stage 4: Fetch URLs (25%)
+  onProgress?.('Analyzing URLs', 25, `Fetching and analyzing ${allUrls.length} evidence URLs...`);
+  const urlsAnalyzed = await fetchMultipleUrls(allUrls);
+
+  // Stage 5: Generate Document 1 - Comprehensive Analysis (35%)
+  onProgress?.('Generating Comprehensive Analysis', 35, 'Creating 75+ page comprehensive analysis...');
   const document1 = await generateComprehensiveAnalysis(
     beneficiaryInfo,
     knowledgeBaseContext,
@@ -111,7 +255,7 @@ export async function generateAllDocuments(
     fileEvidence
   );
 
-  // Stage 4: Generate Document 2 - Publication Analysis (60%)
+  // Stage 6: Generate Document 2 - Publication Analysis (55%)
   onProgress?.('Generating Publication Analysis', 55, 'Creating 40+ page publication significance analysis...');
   const document2 = await generatePublicationAnalysis(
     beneficiaryInfo,
@@ -120,8 +264,8 @@ export async function generateAllDocuments(
     document1
   );
 
-  // Stage 5: Generate Document 3 - URL Reference (75%)
-  onProgress?.('Generating URL Reference', 75, 'Creating organized URL reference document...');
+  // Stage 7: Generate Document 3 - URL Reference (70%)
+  onProgress?.('Generating URL Reference', 70, 'Creating organized URL reference document...');
   const document3 = await generateUrlReference(
     beneficiaryInfo,
     urlsAnalyzed,
@@ -129,8 +273,8 @@ export async function generateAllDocuments(
     document2
   );
 
-  // Stage 6: Generate Document 4 - Legal Brief (85%)
-  onProgress?.('Generating Legal Brief', 85, 'Creating 30+ page professional legal brief...');
+  // Stage 8: Generate Document 4 - Legal Brief (80%)
+  onProgress?.('Generating Legal Brief', 80, 'Creating 30+ page professional legal brief...');
   const document4 = await generateLegalBrief(
     beneficiaryInfo,
     knowledgeBaseContext,
@@ -139,8 +283,8 @@ export async function generateAllDocuments(
     document3
   );
 
-  // Stage 7: Generate Document 5 - Evidence Gap Analysis (88%)
-  onProgress?.('Analyzing Evidence Gaps', 88, 'Scoring evidence and identifying weaknesses...');
+  // Stage 9: Generate Document 5 - Evidence Gap Analysis (87%)
+  onProgress?.('Analyzing Evidence Gaps', 87, 'Scoring evidence and identifying weaknesses...');
   const document5 = await generateEvidenceGapAnalysis(
     beneficiaryInfo,
     knowledgeBaseContext,
@@ -150,7 +294,7 @@ export async function generateAllDocuments(
     onProgress
   );
 
-  // Stage 8: Generate Document 6 - USCIS Cover Letter (91%)
+  // Stage 10: Generate Document 6 - USCIS Cover Letter (91%)
   onProgress?.('Generating Cover Letter', 91, 'Creating professional USCIS submission letter...');
   const document6 = await generateCoverLetter(
     beneficiaryInfo,
@@ -158,7 +302,7 @@ export async function generateAllDocuments(
     onProgress
   );
 
-  // Stage 9: Generate Document 7 - Visa Checklist (94%)
+  // Stage 11: Generate Document 7 - Visa Checklist (94%)
   onProgress?.('Creating Visa Checklist', 94, 'Building quick reference scorecard...');
   const document7 = await generateVisaChecklist(
     beneficiaryInfo,
@@ -166,7 +310,7 @@ export async function generateAllDocuments(
     onProgress
   );
 
-  // Stage 10: Generate Document 8 - Exhibit Assembly Guide (97%)
+  // Stage 12: Generate Document 8 - Exhibit Assembly Guide (97%)
   onProgress?.('Generating Exhibit Guide', 97, 'Creating assembly instructions...');
   const document8 = await generateExhibitGuide(
     beneficiaryInfo,
@@ -537,25 +681,107 @@ async function generateLegalBrief(
   doc2: string,
   doc3: string
 ): Promise<string> {
-  const prompt = `You are an expert immigration attorney drafting a professional petition brief for ${beneficiaryInfo.visaType}.
+  // Get visa-specific template requirements
+  const cfrSection = getCFRSection(beneficiaryInfo.visaType);
+  const criteria = getCriteriaForVisaType(beneficiaryInfo.visaType);
+  const hasComparable = hasComparableEvidenceProvision(beneficiaryInfo.visaType);
+  const comparableCFR = getComparableEvidenceCFR(beneficiaryInfo.visaType);
 
-BENEFICIARY: ${beneficiaryInfo.fullName}
-FIELD: ${beneficiaryInfo.fieldOfProfession}
+  // Build criterion-specific template instructions
+  let criterionTemplates = '';
+  for (const criterion of criteria) {
+    criterionTemplates += `
+### **Criterion Number ${criterion.number}: ${criterion.name}**
 
-KNOWLEDGE BASE (Regulations):
+☐ **Yes**, the Beneficiary is pursuing qualification under this criterion.
+☐ **No**, the Beneficiary is not pursuing qualification under this criterion.
+
+#### **Regulatory Standard**
+
+Under **${criterion.cfrCitation}**, ${criterion.regulatoryLanguage} This evidence must establish:
+
+${criterion.elements.map((el, i) => `${i + 1}. ${el}`).join('\n')}
+
+---
+
+**Establishment of Elements in Evidence**
+
+The Beneficiary satisfies this criterion, as the evidence provided establishes the following:
+
+${criterion.elements.map((el, i) => `${i + 1}. **${el}**: [Specific evidence with exhibit references from the analysis documents]`).join('\n')}
+
+The evidence supporting these elements includes [list specific exhibits]. All relevant supporting materials have been included as exhibits in this petition.
+
+${hasComparable ? `
+---
+
+**Comparable Evidence Theory**
+
+☐ **Yes**, this criterion is being considered under the comparable evidence theory.
+☐ **No**, this criterion is not being considered under the comparable evidence theory.
+
+If "Yes," the following USCIS language applies:
+When the standard evidentiary requirements described in **${criterion.cfrCitation}** do not readily apply to the Beneficiary's field, the Petitioner may submit comparable evidence under **${comparableCFR}**. Comparable evidence must demonstrate that the Beneficiary's achievements or recognition are of comparable significance to ${criterion.name.toLowerCase()}.
+
+---
+
+**Explanation of Comparable Evidence**
+
+[If using comparable evidence for this criterion, provide detailed 2-3 paragraph explanation of:
+1. WHY the standard criterion doesn't apply to this field
+2. WHAT evidence is being submitted as comparable
+3. HOW this evidence demonstrates comparable significance]
+
+---
+` : ''}
+
+**Consideration of Evidence**
+
+Evidence for this criterion, including comparable evidence (if applicable), has been included in this petition.
+
+All relevant evidence provided in this petition establishes that the Beneficiary has met the regulatory requirements under **${criterion.cfrCitation}**. The adjudicating officer is requested to consider all submitted materials${hasComparable ? ` and, if applicable, evaluate the evidence under the comparable evidence standard per **${comparableCFR}**` : ''}.
+
+**Citation**: This section aligns with **${criterion.cfrCitation}**${hasComparable ? ` and **${comparableCFR}**` : ''}, which govern the requirements and flexibility for demonstrating ${criterion.name.toLowerCase()}.
+
+---
+
+`;
+  }
+
+  const prompt = `${TEMPLATE_ENFORCEMENT_SYSTEM_PROMPT}
+
+# LEGAL BRIEF GENERATION - ${beneficiaryInfo.visaType} PETITION
+
+## BENEFICIARY INFORMATION
+- **Full Name**: ${beneficiaryInfo.fullName}
+- **Field of Endeavor**: ${beneficiaryInfo.fieldOfProfession}
+- **Visa Type**: ${beneficiaryInfo.visaType}
+- **Comparable Evidence Available**: ${hasComparable ? `YES - Must include Comparable Evidence sections` : `NO - Do NOT include Comparable Evidence sections`}
+
+## CFR REFERENCE
+Base Section: ${cfrSection}
+${hasComparable ? `Comparable Evidence Section: ${comparableCFR}` : ''}
+
+## KNOWLEDGE BASE (Regulations):
 ${knowledgeBase.substring(0, 20000)}
 
-ANALYSIS SUMMARY (from Document 1):
+## ANALYSIS SUMMARY (from Document 1):
 ${doc1.substring(0, 8000)}
 
-PUBLICATION DATA (from Document 2):
+## PUBLICATION DATA (from Document 2):
 ${doc2.substring(0, 5000)}
 
-URL REFERENCES (from Document 3):
+## URL REFERENCES (from Document 3):
 ${doc3.substring(0, 3000)}
 
+## STRICT STRUCTURE REQUIREMENTS
+
+You are generating the LEGAL BRIEF (Document 4). This is the primary document reviewed by USCIS. It MUST follow the DIY template structure EXACTLY.
+
+### DOCUMENT STRUCTURE
+
 YOUR TASK:
-Generate a professional 30+ page PETITION BRIEF in proper legal format:
+Generate a professional 30-50 page PETITION BRIEF in proper legal format following this EXACT structure:
 
 # PETITION BRIEF IN SUPPORT OF ${beneficiaryInfo.visaType} PETITION
 ## ${beneficiaryInfo.fullName}
@@ -608,13 +834,14 @@ VIII. Exhibit List
 [Exact INA section and CFR regulations for ${beneficiaryInfo.visaType}]
 
 ### B. Regulatory Criteria
-[List all criteria from regulations]
+[List all criteria from regulations with checkbox format]
 
 ### C. Standard of Proof
 [Preponderance of evidence standard]
 
 ### D. Applicable USCIS Policy Guidance
 [Recent policy memos]
+${hasComparable ? `\n### E. Comparable Evidence Standard\n[Explanation of ${comparableCFR} provision for ${beneficiaryInfo.visaType}]` : ''}
 
 ---
 
@@ -626,25 +853,20 @@ VIII. Exhibit List
 
 ## V. ARGUMENT - CRITERIA ANALYSIS
 
-For EACH criterion being claimed:
+**CRITICAL STRUCTURE**: You MUST use the following EXACT template structure for EACH criterion claimed:
 
-### A. Criterion [Number]: [Full Name from Regulations]
+${criterionTemplates}
 
-**Legal Standard**: [Exact regulatory language]
+[REPEAT THE ABOVE EXACT STRUCTURE FOR ALL CRITERIA THAT APPLY TO THIS CASE]
 
-**Evidence Presented**:
-[List exhibits with references to Document 3 URLs]
-
-**Analysis**:
-[Detailed legal argument - 2-3 pages per criterion using:
-- Evidence from Document 1
-- Publication significance from Document 2
-- URL references from Document 3
-- Case law citations where applicable]
-
-**Conclusion**: The beneficiary clearly satisfies this criterion.
-
-[Repeat for ALL criteria]
+**CRITICAL REMINDERS**:
+1. EVERY criterion MUST have the checkbox format (☐ Yes / ☐ No)
+2. EVERY criterion MUST have the Regulatory Standard block with exact CFR citation
+3. EVERY criterion MUST have Establishment of Elements with numbered points matching regulatory elements
+4. ${hasComparable ? `EVERY criterion MUST have the Comparable Evidence Theory section (even if checking "No")` : `DO NOT include Comparable Evidence Theory (not available for ${beneficiaryInfo.visaType})`}
+5. EVERY criterion MUST end with Consideration of Evidence closing
+6. Reference SPECIFIC exhibits from Document 3
+7. Each criterion should be 3-5 pages of detailed analysis
 
 ---
 
@@ -693,33 +915,34 @@ Respectfully submitted,
 - B-1: [Description] - [URL from Doc 3]
 - B-2: [Description] - [URL from Doc 3]
 
-[Continue for all exhibits]
+[Continue for all exhibits organized by criterion]
 
 **TOTAL EXHIBITS**: [Number]
 
 ---
 
-CRITICAL REQUIREMENTS:
-- **LENGTH**: This MUST be a COMPREHENSIVE 30-40 PAGE legal brief (~15,000-20,000 words)
-- **DETAIL LEVEL**: Each criterion argument should be 2-4 pages of detailed legal analysis
-- Professional legal writing with formal tone throughout
-- Proper citations to INA sections, CFR regulations, and case law
-- Cross-reference exhibits to URLs from Document 3
-- Statement of Facts should be 3-5 pages of detailed chronological narrative
-- Each criterion gets thorough legal analysis (not brief summaries)
-- USCIS-ready format with proper structure
-- Persuasive but objective tone with strong legal arguments
-- Include detailed exhibit list organized by criterion
+## CRITICAL REQUIREMENTS - ENFORCE STRICTLY:
 
-**OUTPUT FORMAT**: Generate the FULL, UNABBREVIATED legal brief. This is a formal USCIS petition document. Write as if submitting to immigration officers.
+1. **LENGTH**: This MUST be a COMPREHENSIVE 30-50 PAGE legal brief (~20,000-25,000 words)
+2. **TEMPLATE ADHERENCE**: EVERY criterion MUST follow the exact DIY template structure above
+3. **CHECKBOX FORMAT**: Never skip the ☐ Yes/No checkboxes
+4. **CFR CITATIONS**: All citations must be bold and exact: **8 CFR § X.X(x)(x)(x)**
+5. **ESTABLISHMENT OF ELEMENTS**: Must have numbered points matching regulatory requirements
+6. **COMPARABLE EVIDENCE**: ${hasComparable ? `MUST be included for ALL criteria` : `MUST NOT be included (not available for ${beneficiaryInfo.visaType})`}
+7. **CONSIDERATION OF EVIDENCE**: Must end EVERY criterion
+8. **SPECIFIC EVIDENCE**: Reference actual exhibits, not vague statements
+9. **TOKEN USAGE**: Use ALL allocated tokens - do not truncate
+10. **NO SUMMARIES**: Write complete, detailed analysis for each criterion
 
-Generate the COMPLETE legal brief now (aim for maximum professional detail and length):`;
+**OUTPUT FORMAT**: Generate the FULL, UNABBREVIATED legal brief following the DIY template structure EXACTLY. This is a formal USCIS petition document.
+
+Generate the COMPLETE legal brief now:`;
 
   const response = await retryWithBackoff(() =>
     anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 20480, // Increased by 25% from 16384 to prevent timeout truncation
-      temperature: 0.3,
+      max_tokens: 32000, // Maximum tokens for DIY template-compliant legal brief
+      temperature: 0.2, // Lower temperature for strict template adherence
       messages: [
         {
           role: 'user',
