@@ -22,6 +22,18 @@ export interface BeneficiaryLookupResult {
     medium: number;
     low: number;
   };
+  // Verification data to confirm correct person
+  verificationData?: {
+    likelyCorrectPerson: boolean;
+    confidence: 'high' | 'medium' | 'low';
+    keyIdentifiers: string[]; // e.g., "NFL kicker", "Green Bay Packers", "Australian"
+    summary: string; // Brief summary of who this person appears to be
+    potentialMatches?: Array<{
+      name: string;
+      description: string;
+      likelihood: 'high' | 'medium' | 'low';
+    }>;
+  };
 }
 
 /**
@@ -125,7 +137,20 @@ Return a JSON object with this EXACT structure:
   ],
   "searchStrategy": "Brief explanation of what search approach you used",
   "totalFound": 12,
-  "failedSearches": ["list of search strategies that didn't work, if any"]
+  "failedSearches": ["list of search strategies that didn't work, if any"],
+  "verificationData": {
+    "likelyCorrectPerson": true or false,
+    "confidence": "high" or "medium" or "low",
+    "keyIdentifiers": ["specific identifying details like team name, company, location, notable achievements"],
+    "summary": "2-3 sentence summary of who this person is based on the sources found",
+    "potentialMatches": [
+      {
+        "name": "Full name variation if applicable",
+        "description": "Brief description of this potential match",
+        "likelihood": "high" or "medium" or "low"
+      }
+    ]
+  }
 }
 
 CONFIDENCE LEVELS:
@@ -184,6 +209,7 @@ BEGIN YOUR COMPREHENSIVE SEARCH NOW:`;
       searchStrategy: result.searchStrategy || 'Comprehensive multi-source search',
       totalFound: sources.length,
       confidenceDistribution,
+      verificationData: result.verificationData,
     };
   } catch (error) {
     console.error('Error in AI beneficiary lookup:', error);
