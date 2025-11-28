@@ -1,7 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
+import {
+  retryWithBackoff,
+  createFallbackLookupResult,
+  logError,
+  safeJsonParse,
+} from './retry-helper';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
+  timeout: 60000, // 60 seconds timeout for beneficiary lookup
+  maxRetries: 2, // SDK-level retries
 });
 
 export interface BeneficiarySource {
@@ -44,142 +52,66 @@ export interface BeneficiaryLookupResult {
  */
 export async function lookupBeneficiary(
   name: string,
-  profession: string,
-  additionalInfo?: string
+  profession: string
 ): Promise<BeneficiaryLookupResult> {
-  const prompt = `You are a research assistant helping find online sources about a person for visa petition evidence.
-
-TASK: Find 10-15 verifiable URLs about this person.
-
-BENEFICIARY INFORMATION:
-- Name: ${name}
-- Profession: ${profession}
-- Additional Context: ${additionalInfo || 'None provided'}
+  const prompt = `Find 8-12 verifiable URLs about ${name} (${profession}) for visa petition evidence.
 
 SEARCH STRATEGY:
-1. Start with the MOST LIKELY variations:
-   - Full name exact: "${name}"
-   - Name + profession: "${name} ${profession}"
-   - Name + common platforms in their field
+1. Primary sources: Wikipedia, LinkedIn, official pages, team/company sites
+2. Major platforms: ESPN/sports DBs, IMDb, Google Scholar, industry databases
+3. News: Major publications (NYT, WSJ, ESPN, SI, etc.)
+4. Social: Verified Twitter/Instagram, YouTube features
 
-2. Search these SOURCE TYPES (in priority order):
-   - Wikipedia (if notable enough)
-   - LinkedIn profile
-   - Official team/company pages
-   - Major sports databases (ESPN, NFL, UFC, etc.)
-   - News articles (ESPN, Sports Illustrated, NYT, Washington Post, etc.)
-   - Industry-specific databases (IMDb for entertainment, etc.)
-   - Professional association pages
-   - Social media profiles (Twitter/X, Instagram - official verified accounts)
-   - YouTube interviews/features
-   - University/college profiles
-   - Award databases
-
-3. For ATHLETES specifically, check:
-   - ESPN player pages
-   - Team official websites
-   - Pro Football Reference / Basketball Reference / Baseball Reference / Hockey Reference
-   - Draft profiles and scouting reports
-   - News coverage of games/performances
-   - Sports Illustrated features
-   - Athletic.com articles
-   - Local news coverage
-
-4. For ENTERTAINERS specifically, check:
-   - IMDb profiles
-   - Spotify/Apple Music artist pages
-   - Billboard charts/features
-   - Record label pages
-   - Festival lineups
-   - Entertainment news (Variety, Hollywood Reporter)
-   - Rotten Tomatoes/Metacritic
-
-5. For SCIENTISTS/ACADEMICS specifically, check:
-   - Google Scholar profiles
-   - University faculty pages
-   - ResearchGate/Academia.edu
-   - PubMed author searches
-   - Conference presentations
-   - Research lab pages
-   - Citations and publications
-
-6. For BUSINESS PROFESSIONALS specifically, check:
-   - LinkedIn profile
-   - Company leadership pages
-   - Forbes/Fortune mentions
-   - Business news (WSJ, Bloomberg, Business Insider)
-   - Press releases
-   - Industry publications
-   - Conference speaker profiles
-
-IMPORTANT INSTRUCTIONS:
-- Be LIBERAL in your search - include sources even if they might be about a different person with the same name (we can filter later)
-- DO NOT return "no results found" unless you have genuinely exhausted ALL search strategies above
-- For common names, include multiple potential matches and note the uncertainty in confidence level
-- Include URLs even if you're only 60-70% confident they're the right person
-- Return AT LEAST 10 URLs if the person has ANY online presence whatsoever
-- If you find fewer than 10 URLs, explain what searches you attempted and why they didn't yield more results
-- Prioritize recent sources (last 5 years) but include older notable achievements
-- Include both primary sources (official pages) and secondary sources (news articles, features)
-
-OUTPUT FORMAT:
-Return a JSON object with this EXACT structure:
+OUTPUT JSON:
 {
   "sources": [
     {
-      "url": "https://example.com/article",
-      "title": "Title of the page or article",
-      "source": "Website name (e.g., ESPN, LinkedIn, Wikipedia)",
-      "confidence": "high" or "medium" or "low",
-      "description": "Brief 1-sentence description of what this source contains and why it's relevant",
-      "category": "profile" or "news" or "achievement" or "publication" or "media"
+      "url": "full URL",
+      "title": "page title",
+      "source": "site name",
+      "confidence": "high/medium/low",
+      "description": "1 sentence relevance",
+      "category": "profile/news/achievement/publication/media"
     }
   ],
-  "searchStrategy": "Brief explanation of what search approach you used",
-  "totalFound": 12,
-  "failedSearches": ["list of search strategies that didn't work, if any"],
+  "searchStrategy": "brief approach description",
+  "totalFound": number,
   "verificationData": {
-    "likelyCorrectPerson": true or false,
-    "confidence": "high" or "medium" or "low",
-    "keyIdentifiers": ["specific identifying details like team name, company, location, notable achievements"],
-    "summary": "2-3 sentence summary of who this person is based on the sources found",
-    "potentialMatches": [
-      {
-        "name": "Full name variation if applicable",
-        "description": "Brief description of this potential match",
-        "likelihood": "high" or "medium" or "low"
-      }
-    ]
+    "likelyCorrectPerson": true/false,
+    "confidence": "high/medium/low",
+    "keyIdentifiers": ["key details"],
+    "summary": "2-3 sentence summary"
   }
 }
 
-CONFIDENCE LEVELS:
-- "high": 90%+ confident this is the right person (official pages, verified profiles, direct mentions)
-- "medium": 70-90% confident (news articles with matching details, likely same person)
-- "low": 50-70% confident (common name, could be same person, needs verification)
+CONFIDENCE:
+- high: 90%+ (official, verified)
+- medium: 70-90% (news, likely match)
+- low: 50-70% (needs verification)
 
-If you genuinely cannot find ANY information after exhaustive searching (extremely rare), return:
-{
-  "sources": [],
-  "searchStrategy": "Detailed explanation of all searches attempted",
-  "totalFound": 0,
-  "failedSearches": ["all the specific search strategies you tried"]
-}
-
-BEGIN YOUR COMPREHENSIVE SEARCH NOW:`;
+Include sources even if 60-70% confident. Be liberal in search.`;
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 4096,
-      temperature: 0.3, // Slightly creative but consistent
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    });
+    console.log(`[BeneficiaryLookup] Starting lookup for: ${name} (${profession})`);
+
+    const response = await retryWithBackoff(
+      () =>
+        anthropic.messages.create({
+          model: 'claude-sonnet-4-5-20250929',
+          max_tokens: 2048, // Reduced from 4096
+          temperature: 0.2, // Reduced for faster response
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        }),
+      {
+        maxRetries: 3,
+        initialDelay: 1000,
+      }
+    );
 
     const content = response.content[0];
     if (content.type !== 'text') {
@@ -189,13 +121,14 @@ BEGIN YOUR COMPREHENSIVE SEARCH NOW:`;
     // Parse the JSON response
     const jsonMatch = content.text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error('Could not parse JSON from Claude response');
+      console.warn('[BeneficiaryLookup] Could not find JSON in response');
+      return createFallbackLookupResult();
     }
 
-    const result = JSON.parse(jsonMatch[0]);
+    const result = safeJsonParse(jsonMatch[0], {});
 
     // Validate and structure the result
-    const sources: BeneficiarySource[] = result.sources || [];
+    const sources: BeneficiarySource[] = Array.isArray(result.sources) ? result.sources : [];
 
     // Calculate confidence distribution
     const confidenceDistribution = {
@@ -203,6 +136,8 @@ BEGIN YOUR COMPREHENSIVE SEARCH NOW:`;
       medium: sources.filter(s => s.confidence === 'medium').length,
       low: sources.filter(s => s.confidence === 'low').length,
     };
+
+    console.log(`[BeneficiaryLookup] Found ${sources.length} sources`);
 
     return {
       sources,
@@ -212,15 +147,10 @@ BEGIN YOUR COMPREHENSIVE SEARCH NOW:`;
       verificationData: result.verificationData,
     };
   } catch (error) {
-    console.error('Error in AI beneficiary lookup:', error);
+    logError('AI beneficiary lookup', error, { name, profession });
 
-    // Return empty result with error info instead of throwing
-    return {
-      sources: [],
-      searchStrategy: `Error occurred: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      totalFound: 0,
-      confidenceDistribution: { high: 0, medium: 0, low: 0 },
-    };
+    // Return fallback result instead of empty
+    return createFallbackLookupResult();
   }
 }
 

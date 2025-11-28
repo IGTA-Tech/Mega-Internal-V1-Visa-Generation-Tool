@@ -21,6 +21,11 @@ export interface BeneficiaryInfo {
   primaryUrls?: string[]; // Array of primary URL strings for generation
   urls?: any[]; // Full URL objects with metadata
   uploadedFiles?: UploadedFile[]; // Files uploaded by user
+  // Aliases for compatibility
+  background?: string; // Alias for backgroundInfo
+  recipientEmail?: string; // Email for sending documents
+  jobTitle?: string; // Alias for profession
+  occupation?: string; // Alias for profession
 }
 
 export interface URL {

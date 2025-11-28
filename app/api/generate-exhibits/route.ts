@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { getSupabaseClient } from '@/app/lib/supabase-server';
 import { generateExhibitPackage } from '@/app/lib/exhibit-generator';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = getSupabaseClient();
     const body = await request.json();
     const { caseId, exhibitSources } = body;
 
@@ -81,6 +77,7 @@ async function generateExhibitsInBackground(
   onProgress: (stage: string, progress: number, message: string) => void
 ) {
   try {
+    const supabase = getSupabaseClient();
     // Generate exhibit package
     const exhibitPackage = await generateExhibitPackage(
       caseId,
@@ -123,6 +120,7 @@ async function generateExhibitsInBackground(
     console.error(`❌ Error generating exhibits for case ${caseId}:`, error);
 
     // Update case with error
+    const supabase = getSupabaseClient();
     await supabase
       .from('petition_cases')
       .update({

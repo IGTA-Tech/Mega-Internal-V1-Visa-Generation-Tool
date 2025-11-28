@@ -1,21 +1,30 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { BeneficiaryInfo, VisaType, UploadedFileData } from '../types';
+import { BeneficiaryInfo, UploadedFile } from '../types';
 import { getKnowledgeBaseFiles, buildKnowledgeBaseContext } from './knowledge-base';
 import { fetchMultipleUrls, FetchedUrlData, analyzePublicationQuality } from './url-fetcher';
-import { processFile, generateFileEvidenceSummary } from './file-processor';
 import { conductPerplexityResearch, ResearchResult } from './perplexity-research';
 import { getCFRSection, getCriteriaForVisaType, hasComparableEvidenceProvision, getComparableEvidenceCFR } from './criterion-templates';
-import axios from 'axios';
+import {
+  retryWithBackoff as retryHelper,
+  createFallbackContent,
+  createSafeProgressCallback,
+  logError,
+} from './retry-helper';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const http = require('http');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const https = require('https');
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
   timeout: 300000, // 5 minutes
   maxRetries: 3,
-  httpAgent: new (require('http').Agent)({
+  httpAgent: new http.Agent({
     keepAlive: false, // Disable keep-alive to prevent socket reuse issues
     timeout: 300000,
   }),
-  httpsAgent: new (require('https').Agent)({
+  httpsAgent: new https.Agent({
     keepAlive: false, // Disable keep-alive to prevent socket reuse issues
     timeout: 300000,
   }),
@@ -135,35 +144,17 @@ You have been allocated maximum tokens for this document. USE THEM ALL.
 
 type ProgressCallback = (stage: string, progress: number, message: string) => void;
 
-// Helper function to retry API calls with exponential backoff
+// Legacy retry function - now using retry-helper.ts
+// Kept for backward compatibility
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries: number = 3,
   baseDelay: number = 2000
 ): Promise<T> {
-  let lastError: any;
-
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error: any) {
-      lastError = error;
-      const isConnectionError = error.code === 'ECONNRESET' ||
-                                error.message?.includes('socket hang up') ||
-                                error.message?.includes('Connection error');
-
-      if (attempt < maxRetries - 1 && isConnectionError) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.log(`Connection error on attempt ${attempt + 1}/${maxRetries}. Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      } else if (!isConnectionError) {
-        // If it's not a connection error, throw immediately
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
+  return retryHelper(fn, {
+    maxRetries,
+    initialDelay: baseDelay,
+  });
 }
 
 export interface GenerationResult {
@@ -181,20 +172,20 @@ export interface GenerationResult {
   // after user reviews documents and chooses to generate them
 }
 
-async function processUploadedFiles(files: UploadedFileData[]): Promise<string> {
+async function processUploadedFiles(files: UploadedFile[]): Promise<string> {
   if (files.length === 0) return '';
 
   let fileEvidence = '\n\n# UPLOADED DOCUMENT EVIDENCE\n\n';
   fileEvidence += `Total documents uploaded: ${files.length}\n\n`;
 
   for (const fileData of files) {
-    fileEvidence += `## ${fileData.fileName}\n`;
+    fileEvidence += `## ${fileData.filename}\n`;
     fileEvidence += `- Type: ${fileData.fileType}\n`;
-    fileEvidence += `- Word Count: ${fileData.wordCount}\n`;
-    if (fileData.pageCount) {
-      fileEvidence += `- Pages: ${fileData.pageCount}\n`;
+    fileEvidence += `- Word Count: ${fileData.wordCount || 0}\n`;
+    if ((fileData as any).pageCount) {
+      fileEvidence += `- Pages: ${(fileData as any).pageCount}\n`;
     }
-    fileEvidence += `\n**Summary:**\n${fileData.summary}\n\n`;
+    fileEvidence += `\n**Summary:**\n${(fileData as any).summary || 'N/A'}\n\n`;
     fileEvidence += `---\n\n`;
   }
 
@@ -205,146 +196,190 @@ export async function generateAllDocuments(
   beneficiaryInfo: BeneficiaryInfo,
   onProgress?: (stage: string, progress: number, message: string) => void
 ): Promise<GenerationResult> {
-  // Stage 1: Read Knowledge Base (5%)
-  onProgress?.('Reading Knowledge Base', 5, 'Loading visa petition knowledge base files...');
-  const knowledgeBaseFiles = await getKnowledgeBaseFiles(beneficiaryInfo.visaType);
-  const knowledgeBaseContext = buildKnowledgeBaseContext(knowledgeBaseFiles, beneficiaryInfo.visaType);
+  // Create safe progress callback that never throws
+  const safeProgress = createSafeProgressCallback(onProgress);
 
-  // Stage 2: Process Uploaded Files (10%)
-  onProgress?.('Processing Uploaded Files', 10, 'Extracting text from uploaded documents...');
-  const fileEvidence = await processUploadedFiles(beneficiaryInfo.uploadedFiles || []);
+  try {
+    // Stage 1: Read Knowledge Base (5%)
+    safeProgress('Reading Knowledge Base', 5, 'Loading visa petition knowledge base files...');
+    const knowledgeBaseFiles = await getKnowledgeBaseFiles(beneficiaryInfo.visaType);
+    const knowledgeBaseContext = buildKnowledgeBaseContext(knowledgeBaseFiles, beneficiaryInfo.visaType);
 
-  // Stage 3: Conduct Perplexity Research (15-20%) - NEW!
-  let allUrls = beneficiaryInfo.primaryUrls || [];
-  let perplexityResearch: ResearchResult | null = null;
-
-  if (process.env.PERPLEXITY_API_KEY && allUrls.length > 0) {
-    onProgress?.('Perplexity Research', 15, 'Conducting deep research to discover additional sources...');
-
+    // Stage 2: Process Uploaded Files (10%)
+    safeProgress('Processing Uploaded Files', 10, 'Extracting text from uploaded documents...');
+    let fileEvidence = '';
     try {
-      perplexityResearch = await conductPerplexityResearch(beneficiaryInfo, onProgress);
-
-      // Add discovered URLs to the list
-      const discoveredUrls = perplexityResearch.discoveredSources.map(s => s.url);
-      allUrls = [...allUrls, ...discoveredUrls];
-
-      // Deduplicate URLs
-      allUrls = Array.from(new Set(allUrls));
-
-      onProgress?.(
-        'Perplexity Research',
-        20,
-        `Found ${perplexityResearch.totalSourcesFound} additional sources (${perplexityResearch.tier1Count} Tier 1, ${perplexityResearch.tier2Count} Tier 2)`
-      );
+      fileEvidence = await processUploadedFiles(beneficiaryInfo.uploadedFiles || []);
     } catch (error) {
-      console.error('Perplexity research failed, continuing with initial URLs:', error);
-      onProgress?.('Perplexity Research', 20, 'Using initial URLs only');
+      logError('processUploadedFiles', error);
+      safeProgress('Processing Uploaded Files', 10, 'Warning: Some files could not be processed');
+      // Continue with empty file evidence rather than failing
     }
-  } else {
-    onProgress?.('Perplexity Research', 20, 'Skipped (no Perplexity API key or initial URLs)');
+
+    // Stage 3: Conduct Perplexity Research (15-20%) - NEW!
+    let allUrls = beneficiaryInfo.primaryUrls || [];
+    let perplexityResearch: ResearchResult | null = null;
+
+    if (process.env.PERPLEXITY_API_KEY && allUrls.length > 0) {
+      safeProgress('Perplexity Research', 15, 'Conducting deep research to discover additional sources...');
+
+      try {
+        perplexityResearch = await conductPerplexityResearch(beneficiaryInfo, safeProgress);
+
+        // Add discovered URLs to the list
+        const discoveredUrls = perplexityResearch.discoveredSources.map(s => s.url);
+        allUrls = [...allUrls, ...discoveredUrls];
+
+        // Deduplicate URLs
+        allUrls = Array.from(new Set(allUrls));
+
+        safeProgress(
+          'Perplexity Research',
+          20,
+          `Found ${perplexityResearch.totalSourcesFound} additional sources (${perplexityResearch.tier1Count} Tier 1, ${perplexityResearch.tier2Count} Tier 2)`
+        );
+      } catch (error) {
+        logError('Perplexity Research', error);
+        safeProgress('Perplexity Research', 20, 'Using initial URLs only');
+      }
+    } else {
+      safeProgress('Perplexity Research', 20, 'Skipped (no Perplexity API key or initial URLs)');
+    }
+
+    // Stage 4: Fetch URLs (25%)
+    safeProgress('Analyzing URLs', 25, `Fetching and analyzing ${allUrls.length} evidence URLs...`);
+    let urlsAnalyzed: FetchedUrlData[] = [];
+    try {
+      urlsAnalyzed = await fetchMultipleUrls(allUrls);
+    } catch (error) {
+      logError('fetchMultipleUrls', error);
+      safeProgress('Analyzing URLs', 25, 'Warning: Some URLs could not be fetched');
+      // Continue with whatever URLs were successfully fetched
+    }
+
+    // Stage 5: Generate Document 1 - Comprehensive Analysis (35%)
+    safeProgress('Generating Comprehensive Analysis', 35, 'Creating 75+ page comprehensive analysis...');
+    const document1 = await generateComprehensiveAnalysis(
+      beneficiaryInfo,
+      knowledgeBaseContext,
+      urlsAnalyzed,
+      fileEvidence,
+      safeProgress
+    );
+
+    // Stage 6: Generate Document 2 - Publication Analysis (55%)
+    safeProgress('Generating Publication Analysis', 55, 'Creating 40+ page publication significance analysis...');
+    const document2 = await generatePublicationAnalysis(
+      beneficiaryInfo,
+      knowledgeBaseContext,
+      urlsAnalyzed,
+      document1,
+      safeProgress
+    );
+
+    // Stage 7: Generate Document 3 - URL Reference (70%)
+    safeProgress('Generating URL Reference', 70, 'Creating organized URL reference document...');
+    const document3 = await generateUrlReference(
+      beneficiaryInfo,
+      urlsAnalyzed,
+      document1,
+      document2,
+      safeProgress
+    );
+
+    // Stage 8: Generate Document 4 - Legal Brief (80%)
+    safeProgress('Generating Legal Brief', 80, 'Creating 30+ page professional legal brief...');
+    const document4 = await generateLegalBrief(
+      beneficiaryInfo,
+      knowledgeBaseContext,
+      document1,
+      document2,
+      document3,
+      safeProgress
+    );
+
+    // Stage 9: Generate Document 5 - Evidence Gap Analysis (87%)
+    safeProgress('Analyzing Evidence Gaps', 87, 'Scoring evidence and identifying weaknesses...');
+    const document5 = await generateEvidenceGapAnalysis(
+      beneficiaryInfo,
+      knowledgeBaseContext,
+      document1,
+      document2,
+      urlsAnalyzed,
+      safeProgress
+    );
+
+    // Stage 10: Generate Document 6 - USCIS Cover Letter (91%)
+    safeProgress('Generating Cover Letter', 91, 'Creating professional USCIS submission letter...');
+    const document6 = await generateCoverLetter(
+      beneficiaryInfo,
+      document1,
+      safeProgress
+    );
+
+    // Stage 11: Generate Document 7 - Visa Checklist (94%)
+    safeProgress('Creating Visa Checklist', 94, 'Building quick reference scorecard...');
+    const document7 = await generateVisaChecklist(
+      beneficiaryInfo,
+      document5,
+      safeProgress
+    );
+
+    // Stage 12: Generate Document 8 - Exhibit Assembly Guide (97%)
+    safeProgress('Generating Exhibit Guide', 97, 'Creating assembly instructions...');
+    const document8 = await generateExhibitGuide(
+      beneficiaryInfo,
+      urlsAnalyzed,
+      document4,
+      safeProgress
+    );
+
+    // NOTE: Exhibits are generated SEPARATELY after documents are complete
+    // User will have option to generate exhibits after reviewing documents
+    safeProgress('Complete', 100, 'All 8 documents generated successfully!');
+
+    return {
+      document1,
+      document2,
+      document3,
+      document4,
+      document5,
+      document6,
+      document7,
+      document8,
+      urlsAnalyzed,
+      filesProcessed: beneficiaryInfo.uploadedFiles?.length || 0,
+    };
+  } catch (error: any) {
+    // Critical error - generate fallback documents
+    logError('generateAllDocuments', error);
+    safeProgress('Error', 100, 'Generation encountered errors - creating fallback documents');
+
+    const fallbackDoc = createFallbackContent('Visa Petition Documents', beneficiaryInfo);
+
+    return {
+      document1: fallbackDoc,
+      document2: fallbackDoc,
+      document3: fallbackDoc,
+      document4: fallbackDoc,
+      document5: fallbackDoc,
+      document6: fallbackDoc,
+      document7: fallbackDoc,
+      document8: fallbackDoc,
+      urlsAnalyzed: [],
+      filesProcessed: 0,
+    };
   }
-
-  // Stage 4: Fetch URLs (25%)
-  onProgress?.('Analyzing URLs', 25, `Fetching and analyzing ${allUrls.length} evidence URLs...`);
-  const urlsAnalyzed = await fetchMultipleUrls(allUrls);
-
-  // Stage 5: Generate Document 1 - Comprehensive Analysis (35%)
-  onProgress?.('Generating Comprehensive Analysis', 35, 'Creating 75+ page comprehensive analysis...');
-  const document1 = await generateComprehensiveAnalysis(
-    beneficiaryInfo,
-    knowledgeBaseContext,
-    urlsAnalyzed,
-    fileEvidence
-  );
-
-  // Stage 6: Generate Document 2 - Publication Analysis (55%)
-  onProgress?.('Generating Publication Analysis', 55, 'Creating 40+ page publication significance analysis...');
-  const document2 = await generatePublicationAnalysis(
-    beneficiaryInfo,
-    knowledgeBaseContext,
-    urlsAnalyzed,
-    document1
-  );
-
-  // Stage 7: Generate Document 3 - URL Reference (70%)
-  onProgress?.('Generating URL Reference', 70, 'Creating organized URL reference document...');
-  const document3 = await generateUrlReference(
-    beneficiaryInfo,
-    urlsAnalyzed,
-    document1,
-    document2
-  );
-
-  // Stage 8: Generate Document 4 - Legal Brief (80%)
-  onProgress?.('Generating Legal Brief', 80, 'Creating 30+ page professional legal brief...');
-  const document4 = await generateLegalBrief(
-    beneficiaryInfo,
-    knowledgeBaseContext,
-    document1,
-    document2,
-    document3
-  );
-
-  // Stage 9: Generate Document 5 - Evidence Gap Analysis (87%)
-  onProgress?.('Analyzing Evidence Gaps', 87, 'Scoring evidence and identifying weaknesses...');
-  const document5 = await generateEvidenceGapAnalysis(
-    beneficiaryInfo,
-    knowledgeBaseContext,
-    document1,
-    document2,
-    urlsAnalyzed,
-    onProgress
-  );
-
-  // Stage 10: Generate Document 6 - USCIS Cover Letter (91%)
-  onProgress?.('Generating Cover Letter', 91, 'Creating professional USCIS submission letter...');
-  const document6 = await generateCoverLetter(
-    beneficiaryInfo,
-    document1,
-    onProgress
-  );
-
-  // Stage 11: Generate Document 7 - Visa Checklist (94%)
-  onProgress?.('Creating Visa Checklist', 94, 'Building quick reference scorecard...');
-  const document7 = await generateVisaChecklist(
-    beneficiaryInfo,
-    document5,
-    onProgress
-  );
-
-  // Stage 12: Generate Document 8 - Exhibit Assembly Guide (97%)
-  onProgress?.('Generating Exhibit Guide', 97, 'Creating assembly instructions...');
-  const document8 = await generateExhibitGuide(
-    beneficiaryInfo,
-    urlsAnalyzed,
-    document4,
-    onProgress
-  );
-
-  // NOTE: Exhibits are generated SEPARATELY after documents are complete
-  // User will have option to generate exhibits after reviewing documents
-  onProgress?.('Complete', 100, 'All 8 documents generated successfully!');
-
-  return {
-    document1,
-    document2,
-    document3,
-    document4,
-    document5,
-    document6,
-    document7,
-    document8,
-    urlsAnalyzed,
-    filesProcessed: beneficiaryInfo.uploadedFiles?.length || 0,
-  };
 }
 
 async function generateComprehensiveAnalysis(
   beneficiaryInfo: BeneficiaryInfo,
   knowledgeBase: string,
   urls: FetchedUrlData[],
-  fileEvidence: string
+  fileEvidence: string,
+  progressCallback?: ProgressCallback
 ): Promise<string> {
+  try {
   const urlContext = urls
     .map(
       (url, i) =>
@@ -441,38 +476,45 @@ CRITICAL REQUIREMENTS:
 
 Generate the COMPLETE comprehensive analysis now (aim for maximum detail and length):`;
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 20480, // Increased by 25% from 16384 to prevent timeout truncation
-      temperature: 0.3,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    })
-  );
+    const response = await retryWithBackoff(() =>
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 20480, // Increased by 25% from 16384 to prevent timeout truncation
+        temperature: 0.3,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      })
+    );
 
-  const content = response.content[0];
+    const content = response.content[0];
 
-  // If response was truncated, note this
-  let fullContent = content.type === 'text' ? content.text : '';
+    // If response was truncated, note this
+    let fullContent = content.type === 'text' ? content.text : '';
 
-  if (response.stop_reason === 'max_tokens') {
-    fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
+    if (response.stop_reason === 'max_tokens') {
+      fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
+    }
+
+    return fullContent;
+  } catch (error) {
+    logError('generateComprehensiveAnalysis', error);
+    progressCallback?.('Generating Comprehensive Analysis', 35, 'Error - using fallback content');
+    return createFallbackContent('Comprehensive Analysis', beneficiaryInfo);
   }
-
-  return fullContent;
 }
 
 async function generatePublicationAnalysis(
   beneficiaryInfo: BeneficiaryInfo,
   knowledgeBase: string,
   urls: FetchedUrlData[],
-  comprehensiveAnalysis: string
+  comprehensiveAnalysis: string,
+  progressCallback?: ProgressCallback
 ): Promise<string> {
+  try {
   // Smart filtering: Focus on up to 60 most relevant URLs
   // Prioritize by tier quality and content relevance
   let relevantUrls = urls;
@@ -678,38 +720,45 @@ CRITICAL REQUIREMENTS:
 
 Generate the COMPLETE publication analysis now (emphasizing tier-based quality assessment):`;
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 20480, // Increased by 25% from 16384 to prevent timeout truncation
-      temperature: 0.3,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-          },
-      ],
-    })
-  );
+    const response = await retryWithBackoff(() =>
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 20480, // Increased by 25% from 16384 to prevent timeout truncation
+        temperature: 0.3,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+            },
+        ],
+      })
+    );
 
-  const content = response.content[0];
+    const content = response.content[0];
 
-  // If response was truncated, note this
-  let fullContent = content.type === 'text' ? content.text : '';
+    // If response was truncated, note this
+    let fullContent = content.type === 'text' ? content.text : '';
 
-  if (response.stop_reason === 'max_tokens') {
-    fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
+    if (response.stop_reason === 'max_tokens') {
+      fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
+    }
+
+    return fullContent;
+  } catch (error) {
+    logError('generatePublicationAnalysis', error);
+    progressCallback?.('Generating Publication Analysis', 55, 'Error - using fallback content');
+    return createFallbackContent('Publication Analysis', beneficiaryInfo);
   }
-
-  return fullContent;
 }
 
 async function generateUrlReference(
   beneficiaryInfo: BeneficiaryInfo,
   urls: FetchedUrlData[],
   doc1: string,
-  doc2: string
+  doc2: string,
+  progressCallback?: ProgressCallback
 ): Promise<string> {
+  try {
   const prompt = `Create a URL REFERENCE DOCUMENT organizing all evidence URLs by criterion for ${beneficiaryInfo.fullName}'s ${beneficiaryInfo.visaType} petition.
 
 URLS TO ORGANIZE:
@@ -763,22 +812,27 @@ Generate a URL Reference Document with this EXACT structure:
 
 Generate the COMPLETE URL reference document now:`;
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 10240, // Increased by 25% from 8192 for more comprehensive URL reference
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    })
-  );
+    const response = await retryWithBackoff(() =>
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 10240, // Increased by 25% from 8192 for more comprehensive URL reference
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      })
+    );
 
-  const content = response.content[0];
-  return content.type === 'text' ? content.text : '';
+    const content = response.content[0];
+    return content.type === 'text' ? content.text : '';
+  } catch (error) {
+    logError('generateUrlReference', error);
+    progressCallback?.('Generating URL Reference', 70, 'Error - using fallback content');
+    return createFallbackContent('URL Reference', beneficiaryInfo);
+  }
 }
 
 async function generateLegalBrief(
@@ -786,8 +840,10 @@ async function generateLegalBrief(
   knowledgeBase: string,
   doc1: string,
   doc2: string,
-  doc3: string
+  doc3: string,
+  progressCallback?: ProgressCallback
 ): Promise<string> {
+  try {
   // Get visa-specific template requirements
   const cfrSection = getCFRSection(beneficiaryInfo.visaType);
   const criteria = getCriteriaForVisaType(beneficiaryInfo.visaType);
@@ -1069,30 +1125,35 @@ Generate the COMPLETE legal brief now:`;
   // Adjust max_tokens based on brief type
   const maxTokens = isStandard ? 16000 : 32000; // Standard: 16K, Comprehensive: 32K
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: maxTokens,
-      temperature: 0.2, // Lower temperature for strict template adherence
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    })
-  );
+    const response = await retryWithBackoff(() =>
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: maxTokens,
+        temperature: 0.2, // Lower temperature for strict template adherence
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      })
+    );
 
-  const content = response.content[0];
+    const content = response.content[0];
 
-  // If response was truncated, note this
-  let fullContent = content.type === 'text' ? content.text : '';
+    // If response was truncated, note this
+    let fullContent = content.type === 'text' ? content.text : '';
 
-  if (response.stop_reason === 'max_tokens') {
-    fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
+    if (response.stop_reason === 'max_tokens') {
+      fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
+    }
+
+    return fullContent;
+  } catch (error) {
+    logError('generateLegalBrief', error);
+    progressCallback?.('Generating Legal Brief', 80, 'Error - using fallback content');
+    return createFallbackContent('Legal Brief', beneficiaryInfo);
   }
-
-  return fullContent;
 }
 // We'll extend with 4 new documents
 
@@ -1255,7 +1316,7 @@ Generate the COMPLETE evidence gap analysis now (be brutally honest about weakne
 
   const response = await retryWithBackoff(() =>
     anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 16384,
       temperature: 0.3,
       messages: [{ role: 'user', content: prompt }],
@@ -1283,7 +1344,8 @@ async function generateCoverLetter(
   progressCallback?.('Generating Cover Letter', 85, 'Creating USCIS submission cover letter...');
 
   const visaType = beneficiaryInfo.visaType;
-  const criteriaSection = comprehensiveAnalysis.substring(0, 10000);
+  // Extract criteria info for cover letter
+  comprehensiveAnalysis.substring(0, 10000);
 
   const prompt = `You are an expert immigration professional preparing a USCIS cover letter.
 
@@ -1356,7 +1418,7 @@ Generate complete cover letter now:`;
 
   const response = await retryWithBackoff(() =>
     anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 2048,
       temperature: 0.2,
       messages: [{ role: 'user', content: prompt }],
@@ -1534,7 +1596,7 @@ Generate complete checklist now:`;
 
   const response = await retryWithBackoff(() =>
     anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 4096,
       temperature: 0.3,
       messages: [{ role: 'user', content: prompt }],
@@ -1574,7 +1636,7 @@ Visa Type: ${visaType}
 ${urls.map((url, idx) => `${idx + 1}. ${url.url} - ${url.title || 'Untitled'}`).join('\n')}
 
 ## Files (${uploadedFiles.length} total)
-${uploadedFiles.map((file, idx) => `${idx + 1}. ${file.fileName}`).join('\n')}
+${uploadedFiles.map((file, idx) => `${idx + 1}. ${file.filename}`).join('\n')}
 
 # LEGAL BRIEF CONTEXT
 ${legalBrief.substring(0, 8000)}
@@ -1710,7 +1772,7 @@ Generate complete exhibit guide now:`;
 
   const response = await retryWithBackoff(() =>
     anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 8192,
       temperature: 0.2,
       messages: [{ role: 'user', content: prompt }],
