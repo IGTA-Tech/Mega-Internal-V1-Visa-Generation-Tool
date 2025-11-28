@@ -1,0 +1,296 @@
+================================================================================
+SUPABASE DATABASE FIX - EXACT INSTRUCTIONS
+Mega Internal V1 Visa Petition Generator
+================================================================================
+
+PROBLEM SUMMARY:
+- The application currently works WITHOUT Supabase (generates documents successfully)
+- However, Supabase credentials are not being read from .env.local
+- Environment variables show wrong Supabase URL (ugrlnoneetxt instead of oguwvltqkmtzthehdgvi)
+- This indicates environment pollution from parent processes
+- To make the app fully robust, we need proper Supabase database integration
+
+================================================================================
+STEP 1: GET CORRECT SUPABASE CREDENTIALS (CRITICAL)
+================================================================================
+
+Go to your Supabase project dashboard:
+https://supabase.com/dashboard/project/oguwvltqkmtzthehdgvi
+
+You need to get FRESH credentials in the correct JWT format:
+
+1. Navigate to: Project Settings > API
+
+2. Copy these THREE values EXACTLY as shown:
+
+   A) Project URL:
+      - Should look like: https://oguwvltqkmtzthehdgvi.supabase.co
+      - Copy the ENTIRE URL
+
+   B) anon public key (JWT format):
+      - Starts with: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+      - This is a LONG string (200+ characters)
+      - DO NOT use keys starting with "sb_publishable_"
+
+   C) service_role key (JWT format):
+      - Starts with: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+      - This is a LONG string (200+ characters)
+      - DO NOT use keys starting with "sb_secret_"
+
+IMPORTANT: The keys you provided earlier (sb_publishable_ and sb_secret_) are
+NOT compatible with the Supabase JavaScript client. You MUST use JWT tokens.
+
+================================================================================
+STEP 2: UPDATE .env.local FILE
+================================================================================
+
+Location: /home/innovativeautomations/Mega Working - Visa Petition Generator/mega-internal-v1-visa-tool/.env.local
+
+Replace the Supabase section with the FRESH credentials from Step 1:
+
+# ============================================
+# DATABASE & STORAGE
+# ============================================
+
+# Supabase (for database and file storage)
+NEXT_PUBLIC_SUPABASE_URL=https://oguwvltqkmtzthehdgvi.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...[YOUR FRESH ANON KEY]
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...[YOUR FRESH SERVICE ROLE KEY]
+
+CRITICAL:
+- Use the EXACT keys from your Supabase dashboard
+- Make sure they start with "eyJh..." (JWT format)
+- Do NOT add quotes around the values
+- Do NOT add extra spaces or line breaks
+
+================================================================================
+STEP 3: CHECK FOR ENVIRONMENT POLLUTION
+================================================================================
+
+The issue is that environment variables are being read from somewhere else.
+The logs show: 'https://ugrlnoneetxtkcgkkeye.supabase.co' instead of your URL.
+
+This means there are environment variables set at a higher level. Check:
+
+1. System environment variables:
+
+   Run this command:
+   env | grep SUPABASE
+
+   If you see ANY output, those variables are overriding .env.local
+
+   To remove them:
+   unset NEXT_PUBLIC_SUPABASE_URL
+   unset NEXT_PUBLIC_SUPABASE_ANON_KEY
+   unset SUPABASE_SERVICE_ROLE_KEY
+   unset VITE_SUPABASE_URL
+   unset VITE_SUPABASE_ANON_KEY
+
+2. Check parent directory .env files:
+
+   Run this command:
+   find /home/innovativeautomations -name ".env*" -type f 2>/dev/null | grep -v node_modules
+
+   If you find .env files in parent directories, they may be interfering.
+   Either delete them or move them to a backup location.
+
+3. Check shell profile files:
+
+   grep -r "SUPABASE" ~/.bashrc ~/.bash_profile ~/.profile 2>/dev/null
+
+   If you find any SUPABASE exports, comment them out or remove them.
+
+================================================================================
+STEP 4: RESTART THE SERVER (CRITICAL)
+================================================================================
+
+Environment variables are loaded ONCE when the server starts. You MUST restart:
+
+1. Kill ALL running Next.js processes:
+
+   pkill -9 node
+   killall -9 node
+   fuser -k 3000/tcp
+
+2. Clear the Next.js build cache:
+
+   cd "/home/innovativeautomations/Mega Working - Visa Petition Generator/mega-internal-v1-visa-tool"
+   rm -rf .next
+
+3. Start the server fresh:
+
+   npm run dev
+
+4. Wait for compilation to complete (you should see "✓ Ready in XXXXms")
+
+================================================================================
+STEP 5: VERIFY THE FIX
+================================================================================
+
+1. Check server logs for Supabase connection:
+
+   Look for these messages in the terminal:
+   ✅ GOOD: "[Generate] Supabase connected successfully"
+   ❌ BAD:  "[Generate] Supabase not available: Supabase credentials are not configured"
+
+2. Test the Supabase connection directly:
+
+   Run this command:
+   curl -X POST http://localhost:3000/api/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+       "beneficiaryInfo": {
+         "fullName": "Test User",
+         "profession": "Engineer",
+         "visaType": "O-1"
+       },
+       "urls": []
+     }'
+
+   Check the server logs. You should see:
+   "[Supabase] Environment check: { hasUrl: true, hasKey: true, ... }"
+
+3. Check the Supabase dashboard:
+
+   Go to: https://supabase.com/dashboard/project/oguwvltqkmtzthehdgvi/editor
+
+   After running a generation, check these tables:
+   - petition_cases (should have new entries)
+   - generated_documents (should have 8 documents per case)
+   - case_urls (should have URL records if URLs were provided)
+
+================================================================================
+STEP 6: IF STILL NOT WORKING - NUCLEAR OPTION
+================================================================================
+
+If environment pollution persists, create a startup script that clears
+environment before starting the server:
+
+Create file: start-clean.sh
+
+#!/bin/bash
+# Clear all Supabase environment variables
+unset NEXT_PUBLIC_SUPABASE_URL
+unset NEXT_PUBLIC_SUPABASE_ANON_KEY
+unset SUPABASE_SERVICE_ROLE_KEY
+unset VITE_SUPABASE_URL
+unset VITE_SUPABASE_ANON_KEY
+
+# Navigate to project
+cd "/home/innovativeautomations/Mega Working - Visa Petition Generator/mega-internal-v1-visa-tool"
+
+# Clear build cache
+rm -rf .next
+
+# Start server (will read from .env.local ONLY)
+npm run dev
+
+Make it executable:
+chmod +x start-clean.sh
+
+Then run:
+./start-clean.sh
+
+================================================================================
+STEP 7: DATABASE SCHEMA VERIFICATION
+================================================================================
+
+Make sure your Supabase database has the correct tables. Run this SQL in
+Supabase SQL Editor (https://supabase.com/dashboard/project/oguwvltqkmtzthehdgvi/sql):
+
+-- Check if tables exist
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+AND table_name IN ('petition_cases', 'generated_documents', 'case_urls', 'case_files');
+
+You should see these 4 tables. If any are missing, you need to run the
+database migration scripts to create them.
+
+If tables are missing, look for migration files in:
+- supabase/migrations/
+- app/database/schema.sql
+- Or similar locations in the codebase
+
+================================================================================
+EXPECTED RESULT AFTER FIX
+================================================================================
+
+When everything is working correctly, you should see:
+
+✅ Server logs show:
+   [Supabase] Environment check: {
+     hasUrl: true,
+     hasKey: true,
+     urlPrefix: 'https://oguwvltqkmt',
+     keyPrefix: 'eyJhbGciOiJIUzI1NiIs'
+   }
+   [Generate] Supabase connected successfully
+   [Generate] Case created in database: TESTMIJE94KX
+
+✅ Supabase dashboard shows:
+   - New rows in petition_cases table
+   - New rows in generated_documents table (8 per case)
+   - Progress tracking working in real-time
+
+✅ Application features:
+   - Document generation (works with database now)
+   - Progress tracking saves to database
+   - Case history accessible
+   - File uploads save to Supabase Storage
+   - All URLs tracked in database
+
+================================================================================
+TROUBLESHOOTING CHECKLIST
+================================================================================
+
+☐ Got FRESH JWT tokens from Supabase dashboard (not sb_publishable_ keys)
+☐ Updated .env.local with correct credentials
+☐ Checked for system environment variables (env | grep SUPABASE)
+☐ Removed any conflicting environment variables
+☐ Checked parent directories for .env files
+☐ Killed ALL node processes before restart
+☐ Deleted .next build cache
+☐ Started fresh npm run dev
+☐ Waited for full compilation
+☐ Checked server logs for Supabase connection message
+☐ Verified Supabase URL is correct (oguwvltqkmtzthehdgvi)
+☐ Tested document generation
+☐ Checked Supabase dashboard for new data
+
+================================================================================
+CONTACT INFO IF STUCK
+================================================================================
+
+If you're still having issues after following ALL steps above:
+
+1. Send me the output of these commands:
+   - env | grep SUPABASE
+   - grep SUPABASE .env.local
+   - find ~ -name ".env*" -type f 2>/dev/null | head -10
+
+2. Send me the server startup logs (first 50 lines after npm run dev)
+
+3. Send me a screenshot of your Supabase Project Settings > API page
+   (blur out the actual keys, just show the format)
+
+================================================================================
+WHY THE APP WORKS WITHOUT SUPABASE
+================================================================================
+
+The application is designed with graceful degradation:
+- If Supabase is not available, it generates documents anyway
+- Documents are stored in memory and returned to the user
+- This ensures the core functionality never breaks
+- BUT: Without Supabase, you lose:
+  * Case history
+  * Progress tracking
+  * File storage
+  * Multi-user support
+  * Database of past petitions
+
+So fixing Supabase makes the app MUCH more robust and feature-complete.
+
+================================================================================
+END OF INSTRUCTIONS
+================================================================================
