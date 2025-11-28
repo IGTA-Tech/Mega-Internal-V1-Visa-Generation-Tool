@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS petition_cases (
     -- Beneficiary Information
     beneficiary_name TEXT NOT NULL,
     profession TEXT NOT NULL,
-    visa_type TEXT NOT NULL CHECK (visa_type IN ('O-1A', 'O-1B', 'P-1A', 'EB-1A')),
+    visa_type TEXT NOT NULL CHECK (visa_type IN ('O-1A', 'O-1B', 'P-1A', 'EB-1A', 'EB-2 NIW')),
     nationality TEXT,
     current_status TEXT,
     field_of_expertise TEXT,
@@ -27,11 +27,17 @@ CREATE TABLE IF NOT EXISTS petition_cases (
     additional_info TEXT,
 
     -- Case Status
-    status TEXT NOT NULL DEFAULT 'initializing' CHECK (status IN ('initializing', 'researching', 'generating', 'completed', 'failed')),
+    status TEXT NOT NULL DEFAULT 'initializing' CHECK (status IN ('initializing', 'researching', 'generating', 'generating_exhibits', 'completed', 'failed', 'exhibit_generation_failed')),
     progress_percentage INTEGER DEFAULT 0 CHECK (progress_percentage >= 0 AND progress_percentage <= 100),
     current_stage TEXT,
     current_message TEXT,
     error_message TEXT,
+
+    -- Exhibit Generation Tracking
+    exhibit_generation_progress INTEGER DEFAULT 0 CHECK (exhibit_generation_progress >= 0 AND exhibit_generation_progress <= 100),
+    exhibit_package_url TEXT,
+    exhibit_toc_url TEXT,
+    total_exhibits INTEGER DEFAULT 0,
 
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW(),

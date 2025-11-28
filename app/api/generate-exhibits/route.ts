@@ -105,16 +105,17 @@ async function generateExhibitsInBackground(
     if (exhibitPackage.exhibits) {
       const exhibitRecords = exhibitPackage.exhibits.map((exhibit: any) => ({
         case_id: caseId,
-        exhibit_number: exhibit.number,
-        exhibit_label: exhibit.label,
-        source_url: exhibit.sourceUrl,
-        pdf_url: exhibit.pdfUrl,
+        exhibit_number: exhibit.number || exhibit.label, // e.g., "A", "B", "C"
+        exhibit_title: exhibit.title || `Exhibit ${exhibit.number}`,
+        source_url: exhibit.sourceUrl || exhibit.url,
         archive_url: exhibit.archiveUrl,
-        page_count: exhibit.pageCount,
-        file_size: exhibit.fileSize,
+        pdf_storage_url: exhibit.pdfUrl,
+        pdf_size_bytes: exhibit.fileSize || 0,
+        generation_status: 'completed',
+        generated_at: new Date().toISOString(),
       }));
 
-      await supabase.from('case_exhibits').insert(exhibitRecords);
+      await supabase.from('exhibit_pdfs').insert(exhibitRecords);
     }
 
     console.log(`✅ Successfully generated exhibits for case ${caseId}`);

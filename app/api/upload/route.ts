@@ -113,15 +113,28 @@ export async function POST(request: NextRequest) {
 
       // Store file metadata in database if caseId provided
       if (caseId) {
+        // Determine file type category
+        let fileTypeCategory: string;
+        if (file.type === 'application/pdf') {
+          fileTypeCategory = 'pdf';
+        } else if (file.type.includes('word') || file.type.includes('document')) {
+          fileTypeCategory = 'docx';
+        } else if (file.type.startsWith('image/')) {
+          fileTypeCategory = 'image';
+        } else {
+          fileTypeCategory = 'txt';
+        }
+
         await supabase.from('case_files').insert({
           case_id: caseId,
-          file_name: file.name,
-          file_type: file.type,
-          file_size: file.size,
+          filename: file.name, // Match database column name
+          file_type: fileTypeCategory, // Use category (pdf|docx|image|txt)
+          file_size_bytes: file.size, // Match database column name
+          mime_type: file.type,
           storage_path: storagePath,
           storage_url: urlData.publicUrl,
           extracted_text: extractedText,
-          page_count: pageCount,
+          word_count: extractedText ? extractedText.split(/\s+/).length : 0,
           uploaded_at: new Date().toISOString(),
         });
       }

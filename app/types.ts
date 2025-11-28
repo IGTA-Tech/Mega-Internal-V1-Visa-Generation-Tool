@@ -1,6 +1,6 @@
 // Core Types for Visa Petition Generator - Internal Tool
 
-export type VisaType = 'O-1A' | 'O-1B' | 'P-1A' | 'EB-1A';
+export type VisaType = 'O-1A' | 'O-1B' | 'P-1A' | 'EB-1A' | 'EB-2 NIW';
 
 export type BriefType = 'standard' | 'comprehensive';
 
@@ -18,6 +18,9 @@ export interface BeneficiaryInfo {
   petitionerName?: string;
   petitionerOrganization?: string;
   additionalInfo?: string;
+  primaryUrls?: string[]; // Array of primary URL strings for generation
+  urls?: any[]; // Full URL objects with metadata
+  uploadedFiles?: UploadedFile[]; // Files uploaded by user
 }
 
 export interface URL {
