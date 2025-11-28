@@ -3,8 +3,18 @@ import { getSupabaseClient } from '@/app/lib/supabase-server';
 import { generateExhibitPackage } from '@/app/lib/exhibit-generator';
 
 export async function POST(request: NextRequest) {
+  let supabase: any = null;
+
+  // Try to initialize Supabase, but don't fail if it's not configured
   try {
-    const supabase = getSupabaseClient();
+    supabase = getSupabaseClient();
+    console.log('[GenerateExhibits] Supabase connected successfully');
+  } catch (supabaseError: any) {
+    console.warn('[GenerateExhibits] Supabase not available:', supabaseError.message);
+    console.warn('[GenerateExhibits] Continuing without database - exhibits will still generate');
+  }
+
+  try {
     const body = await request.json();
     const { caseId, exhibitSources } = body;
 
@@ -16,31 +26,42 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify case exists
-    const { data: caseData, error: caseError } = await supabase
-      .from('petition_cases')
-      .select('*')
-      .eq('case_id', caseId)
-      .single();
+    // Verify case exists (if Supabase available)
+    if (supabase) {
+      const { data: caseData, error: caseError } = await supabase
+        .from('petition_cases')
+        .select('*')
+        .eq('case_id', caseId)
+        .single();
 
-    if (caseError || !caseData) {
-      return NextResponse.json(
-        { error: 'Case not found' },
-        { status: 404 }
-      );
+      if (caseError || !caseData) {
+        return NextResponse.json(
+          { error: 'Case not found' },
+          { status: 404 }
+        );
+      }
+    } else {
+      console.log('[GenerateExhibits] Skipping case verification (Supabase not available)');
     }
 
-    // Update case status to indicate exhibit generation started
-    await supabase
-      .from('petition_cases')
-      .update({
-        status: 'generating_exhibits',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('case_id', caseId);
+    // Update case status to indicate exhibit generation started (if Supabase available)
+    if (supabase) {
+      await supabase
+        .from('petition_cases')
+        .update({
+          status: 'generating_exhibits',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('case_id', caseId);
+    }
 
     // Progress update function
     const onProgress = async (stage: string, progress: number, message: string) => {
+      if (!supabase) {
+        console.log(`[ExhibitProgress] ${stage} - ${progress}% - ${message}`);
+        return;
+      }
+
       await supabase
         .from('petition_cases')
         .update({

@@ -10,7 +10,16 @@ import {
 
 export async function POST(request: NextRequest) {
   let caseId: string | null = null;
-  const supabase = getSupabaseClient();
+  let supabase: any = null;
+
+  // Try to initialize Supabase, but don't fail if it's not configured
+  try {
+    supabase = getSupabaseClient();
+    console.log('[Generate] Supabase connected successfully');
+  } catch (supabaseError: any) {
+    console.warn('[Generate] Supabase not available:', supabaseError.message);
+    console.warn('[Generate] Continuing without database - documents will still generate');
+  }
 
   try {
     const body = await request.json();
@@ -36,41 +45,45 @@ export async function POST(request: NextRequest) {
     caseId = generateCaseId(beneficiaryInfo.fullName);
     console.log(`[Generate] Generated case ID: ${caseId}`);
 
-    // Create case in database with error handling
-    try {
-      const { error: caseError } = await supabase
-        .from('petition_cases')
-        .insert({
-          case_id: caseId,
-          beneficiary_name: beneficiaryInfo.fullName,
-          profession: beneficiaryInfo.profession,
-          visa_type: beneficiaryInfo.visaType,
-          nationality: beneficiaryInfo.nationality,
-          current_status: beneficiaryInfo.currentStatus,
-          field_of_expertise: beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.profession,
-          background_info: beneficiaryInfo.backgroundInfo,
-          petitioner_name: beneficiaryInfo.petitionerName,
-          petitioner_organization: beneficiaryInfo.petitionerOrganization,
-          additional_info: beneficiaryInfo.additionalInfo,
-          status: 'initializing',
-          progress_percentage: 0,
-          current_stage: 'Starting generation',
-        })
-        .select()
-        .single();
+    // Create case in database with error handling (if Supabase available)
+    if (supabase) {
+      try {
+        const { error: caseError } = await supabase
+          .from('petition_cases')
+          .insert({
+            case_id: caseId,
+            beneficiary_name: beneficiaryInfo.fullName,
+            profession: beneficiaryInfo.profession,
+            visa_type: beneficiaryInfo.visaType,
+            nationality: beneficiaryInfo.nationality,
+            current_status: beneficiaryInfo.currentStatus,
+            field_of_expertise: beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.profession,
+            background_info: beneficiaryInfo.backgroundInfo,
+            petitioner_name: beneficiaryInfo.petitionerName,
+            petitioner_organization: beneficiaryInfo.petitionerOrganization,
+            additional_info: beneficiaryInfo.additionalInfo,
+            status: 'initializing',
+            progress_percentage: 0,
+            current_stage: 'Starting generation',
+          })
+          .select()
+          .single();
 
-      if (caseError) {
-        throw new Error(`Failed to create case: ${caseError.message}`);
+        if (caseError) {
+          throw new Error(`Failed to create case: ${caseError.message}`);
+        }
+
+        console.log(`[Generate] Case created in database: ${caseId}`);
+      } catch (dbError: any) {
+        logError('Database - create case', dbError, { caseId });
+        // Continue even if database write fails - we'll try to save results later
       }
-
-      console.log(`[Generate] Case created in database: ${caseId}`);
-    } catch (dbError: any) {
-      logError('Database - create case', dbError, { caseId });
-      // Continue even if database write fails - we'll try to save results later
+    } else {
+      console.log('[Generate] Skipping database case creation (Supabase not available)');
     }
 
-    // Store URLs in database with error handling
-    if (urls && urls.length > 0) {
+    // Store URLs in database with error handling (if Supabase available)
+    if (urls && urls.length > 0 && supabase) {
       try {
         const urlRecords = urls.map((url: any) => ({
           case_id: caseId,
@@ -91,7 +104,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Start generation in background (fire-and-forget)
-    generateDocumentsInBackground(caseId, beneficiaryInfo, urls || []);
+    generateDocumentsInBackground(caseId, beneficiaryInfo, urls || [], supabase);
 
     return NextResponse.json({
       success: true,
@@ -102,8 +115,8 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     logError('generate POST', error, { caseId });
 
-    // Update case with error if we have a caseId
-    if (caseId) {
+    // Update case with error if we have a caseId and Supabase
+    if (caseId && supabase) {
       try {
         await supabase
           .from('petition_cases')
@@ -142,15 +155,20 @@ function generateCaseId(name: string): string {
 async function generateDocumentsInBackground(
   caseId: string,
   beneficiaryInfo: BeneficiaryInfo,
-  urls: any[]
+  urls: any[],
+  supabase: any = null
 ) {
-  const supabase = getSupabaseClient();
 
   try {
     console.log(`[Background] Starting background generation for case ${caseId}`);
 
-    // Update progress function with error handling
+    // Update progress function with error handling (if Supabase available)
     const updateProgress = async (stage: string, progress: number, message: string) => {
+      if (!supabase) {
+        console.log(`[Progress] ${stage} - ${progress}% - ${message}`);
+        return;
+      }
+
       try {
         await supabase
           .from('petition_cases')
@@ -195,41 +213,48 @@ async function generateDocumentsInBackground(
     ];
 
     let savedCount = 0;
-    for (const doc of documents) {
-      try {
-        await supabase.from('generated_documents').insert({
-          case_id: caseId,
-          document_number: doc.number,
-          document_name: doc.name,
-          document_type: doc.type,
-          content: doc.content,
-          word_count: doc.content.split(/\s+/).length,
-          page_estimate: Math.ceil(doc.content.split(/\s+/).length / 500),
-          storage_url: `generated/${caseId}/document-${doc.number}.md`,
-        });
-        savedCount++;
-      } catch (docError) {
-        logError(`Save document ${doc.number}`, docError, { caseId, docName: doc.name });
-        // Continue saving other documents
-      }
-    }
 
-    console.log(`✅ Successfully generated and saved ${savedCount}/${documents.length} documents for case ${caseId}`);
+    // Save to database if Supabase available
+    if (supabase) {
+      for (const doc of documents) {
+        try {
+          await supabase.from('generated_documents').insert({
+            case_id: caseId,
+            document_number: doc.number,
+            document_name: doc.name,
+            document_type: doc.type,
+            content: doc.content,
+            word_count: doc.content.split(/\s+/).length,
+            page_estimate: Math.ceil(doc.content.split(/\s+/).length / 500),
+            storage_url: `generated/${caseId}/document-${doc.number}.md`,
+          });
+          savedCount++;
+        } catch (docError) {
+          logError(`Save document ${doc.number}`, docError, { caseId, docName: doc.name });
+          // Continue saving other documents
+        }
+      }
+      console.log(`✅ Successfully generated and saved ${savedCount}/${documents.length} documents to database for case ${caseId}`);
+    } else {
+      console.log(`✅ Successfully generated ${documents.length} documents for case ${caseId} (not saved to database - Supabase not available)`);
+    }
   } catch (error: any) {
     logError('generateDocumentsInBackground', error, { caseId });
 
-    // Update case with error - use safe approach
-    try {
-      await supabase
-        .from('petition_cases')
-        .update({
-          status: 'failed',
-          error_message: error.message || 'Unknown error during generation',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('case_id', caseId);
-    } catch (updateError) {
-      logError('Database - update failed status', updateError, { caseId });
+    // Update case with error - use safe approach (if Supabase available)
+    if (supabase) {
+      try {
+        await supabase
+          .from('petition_cases')
+          .update({
+            status: 'failed',
+            error_message: error.message || 'Unknown error during generation',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('case_id', caseId);
+      } catch (updateError) {
+        logError('Database - update failed status', updateError, { caseId });
+      }
     }
   }
 }

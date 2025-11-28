@@ -31,20 +31,63 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create a concise prompt for background generation
+    // Use Perplexity to gather real information if we have URLs
+    let researchedInfo = '';
+    if (urls && urls.length > 0 && process.env.PERPLEXITY_API_KEY) {
+      try {
+        const axios = require('axios');
+        const perplexityResponse = await axios.post(
+          'https://api.perplexity.ai/chat/completions',
+          {
+            model: 'sonar',
+            messages: [
+              {
+                role: 'system',
+                content: 'You are a research assistant. Extract factual information from provided sources.'
+              },
+              {
+                role: 'user',
+                content: `Based on these sources about ${fullName}, provide specific facts about their achievements, credentials, and significance as a ${profession}:\n\n${urls.slice(0, 5).map((url: UrlSource) => `${url.title || url.url}\n${url.description || ''}`).join('\n\n')}\n\nProvide ONLY verified facts, achievements, awards, and credentials.`
+              }
+            ],
+            temperature: 0.2,
+            max_tokens: 500,
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.PERPLEXITY_API_KEY}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: 15000,
+          }
+        );
+        researchedInfo = perplexityResponse.data.choices[0].message.content;
+        console.log('[GenerateBackground] Got research from Perplexity');
+      } catch (error) {
+        console.error('[GenerateBackground] Perplexity research failed:', error);
+      }
+    }
+
     const urlContext = urls && urls.length > 0
-      ? `\n\nREFERENCE SOURCES:\n${urls.slice(0, 5).map((url: UrlSource) => `- ${url.title || url.url}: ${url.description || ''}`).join('\n')}`
+      ? `\n\nSOURCE URLs PROVIDED:\n${urls.slice(0, 5).map((url: UrlSource) => `- ${url.title || url.url}`).join('\n')}`
+      : '';
+
+    const researchContext = researchedInfo
+      ? `\n\nVERIFIED FACTS FROM RESEARCH:\n${researchedInfo}`
       : '';
 
     const prompt = `Generate a professional 2-3 paragraph background summary for a visa petition (${visaType}) for ${fullName}, a ${profession}.
 
-${urlContext}
+${researchContext}${urlContext}
 
-The background should:
-1. Introduce who they are and their field
-2. Highlight their most notable achievements, credentials, or recognition
-3. Explain their significance in their field
-4. Be professional, factual, and suitable for USCIS immigration petition
+CRITICAL INSTRUCTIONS:
+1. Use ONLY the verified facts provided above - do not make up or assume anything
+2. If you have specific achievements/awards from research, include them
+3. Introduce who they are and their field
+4. Highlight their most notable verified achievements
+5. Explain their significance based on the research
+6. Be professional, factual, and suitable for USCIS immigration petition
+7. If no research was provided, create a professional framework that can be filled in later
 
 Keep it concise (150-250 words) and authoritative. Write in third person.`;
 

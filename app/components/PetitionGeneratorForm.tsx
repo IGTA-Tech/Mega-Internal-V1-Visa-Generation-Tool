@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { BeneficiaryInfo, BriefType, VisaType } from '@/app/types';
 
 type Step = 'basic' | 'lookup' | 'autofill' | 'upload' | 'generating' | 'complete';
@@ -28,6 +28,14 @@ export default function PetitionGeneratorForm() {
   const [currentMessage, setCurrentMessage] = useState('');
   const [generatedDocuments, setGeneratedDocuments] = useState<any[]>([]);
   const [error, setError] = useState<string>('');
+  const errorRef = useRef<HTMLDivElement>(null);
+
+  // Scroll to error when it appears
+  useEffect(() => {
+    if (error && errorRef.current) {
+      errorRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [error]);
 
   // Step 1: Basic Info
   const renderBasicInfoStep = () => (
@@ -244,16 +252,50 @@ export default function PetitionGeneratorForm() {
             </p>
           </div>
 
-          <div className="bg-white border-2 border-gray-200 rounded-lg p-5 mb-4 max-h-96 overflow-y-auto shadow-sm">
-            <h4 className="font-semibold text-lg mb-3 text-gray-800">Top Sources:</h4>
-            <ul className="space-y-3">
-              {lookupResult.sources.slice(0, 10).map((source: any, idx: number) => (
-                <li key={idx} className="text-sm border-l-4 border-blue-400 pl-3 py-1">
-                  <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 font-medium hover:underline">
-                    {source.title}
-                  </a>
-                  <div className="text-gray-500 text-xs mt-1">
-                    {source.source || source.sourceName} {source.confidence && `• ${source.confidence} confidence`}
+          <div className="bg-gradient-to-br from-blue-50 to-purple-50 border-2 border-blue-300 rounded-lg p-6 mb-4 max-h-96 overflow-y-auto shadow-lg">
+            <h4 className="font-bold text-xl mb-4 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+              📚 Found Sources ({lookupResult.sources.length})
+            </h4>
+            <ul className="space-y-4">
+              {lookupResult.sources.map((source: any, idx: number) => (
+                <li key={idx} className="bg-white border-2 border-blue-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+                  <div className="flex items-start gap-3">
+                    <span className="text-2xl">{idx + 1}</span>
+                    <div className="flex-1">
+                      <a
+                        href={source.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 font-bold text-base hover:underline block"
+                      >
+                        {source.title || 'Untitled'}
+                        <span className="ml-2 text-xs">🔗</span>
+                      </a>
+                      {source.description && (
+                        <p className="text-gray-600 text-sm mt-1">{source.description}</p>
+                      )}
+                      <div className="flex items-center gap-3 mt-2 text-xs">
+                        <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
+                          {source.source || source.sourceName || new URL(source.url).hostname}
+                        </span>
+                        {source.confidence && (
+                          <span className={`px-2 py-1 rounded font-medium ${
+                            source.confidence === 'high'
+                              ? 'bg-green-100 text-green-700'
+                              : source.confidence === 'medium'
+                              ? 'bg-yellow-100 text-yellow-700'
+                              : 'bg-gray-100 text-gray-700'
+                          }`}>
+                            {source.confidence} quality
+                          </span>
+                        )}
+                        {source.category && (
+                          <span className="bg-purple-100 text-purple-700 px-2 py-1 rounded font-medium">
+                            {source.category}
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </li>
               ))}
@@ -822,9 +864,18 @@ export default function PetitionGeneratorForm() {
       </div>
 
       {error && (
-        <div className="mb-6 bg-gradient-to-r from-red-50 to-pink-50 border-2 border-red-300 text-red-700 px-6 py-4 rounded-lg shadow-md flex items-start gap-3">
+        <div
+          ref={errorRef}
+          className="mb-6 bg-gradient-to-r from-red-50 to-pink-50 border-2 border-red-300 text-red-700 px-6 py-4 rounded-lg shadow-md flex items-start gap-3 animate-pulse"
+        >
           <span className="text-2xl">⚠️</span>
-          <div className="flex-1">{error}</div>
+          <div className="flex-1 font-semibold">{error}</div>
+          <button
+            onClick={() => setError('')}
+            className="text-red-500 hover:text-red-700 font-bold text-xl"
+          >
+            ×
+          </button>
         </div>
       )}
 
