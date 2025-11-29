@@ -10,6 +10,7 @@ import {
   createSafeProgressCallback,
   logError,
 } from './retry-helper';
+import { callOpenAI, isOpenAIConfigured } from './openai-client';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const http = require('http');
@@ -19,16 +20,88 @@ const https = require('https');
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
   timeout: 300000, // 5 minutes
-  maxRetries: 3,
-  httpAgent: new http.Agent({
-    keepAlive: false, // Disable keep-alive to prevent socket reuse issues
-    timeout: 300000,
-  }),
-  httpsAgent: new https.Agent({
-    keepAlive: false, // Disable keep-alive to prevent socket reuse issues
-    timeout: 300000,
-  }),
+  maxRetries: 0, // We handle retries ourselves in retryHelper
 });
+
+/**
+ * RETRY WITH CLAUDE + OPENAI FALLBACK
+ *
+ * Attempts to call Claude API with retries. If all retries fail, falls back to OpenAI GPT-4o.
+ * This ensures document generation NEVER fails due to a single API being down.
+ *
+ * @param prompt - The user prompt/content
+ * @param systemPrompt - Optional system prompt (default: '')
+ * @param maxTokens - Max tokens for response (default: 16384)
+ * @param temperature - Temperature setting (default: 0.3)
+ * @returns The AI-generated text content
+ */
+export async function callAIWithFallback(
+  prompt: string,
+  systemPrompt: string = '',
+  maxTokens: number = 16384,
+  temperature: number = 0.3
+): Promise<string> {
+  let claudeError: any = null;
+
+  // Try Claude first with retries
+  try {
+    console.log('[AI] Attempting Claude Sonnet 4.5 (September 2025)...');
+    const response = await retryHelper(() =>
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: maxTokens,
+        temperature: temperature,
+        system: systemPrompt || undefined,
+        messages: [{ role: 'user', content: prompt }],
+      })
+    );
+
+    const content = response.content[0];
+    if (content.type === 'text') {
+      console.log('[AI] Claude succeeded!');
+      return content.text;
+    }
+
+    throw new Error('Claude returned non-text response');
+  } catch (error: any) {
+    claudeError = error;
+    console.error('[AI] Claude API failed after all retries:', error.message);
+  }
+
+  // Claude failed - try OpenAI fallback if configured
+  if (!isOpenAIConfigured()) {
+    console.log('[AI] OpenAI not configured, cannot fallback');
+    throw claudeError;
+  }
+
+  console.log('[AI Fallback] Attempting OpenAI GPT-4o as fallback...');
+
+  try {
+    // GPT-4o has a max_tokens limit of 16384
+    const openaiMaxTokens = Math.min(maxTokens, 16384);
+    if (openaiMaxTokens < maxTokens) {
+      console.log(`[AI Fallback] Capping max_tokens from ${maxTokens} to ${openaiMaxTokens} (GPT-4o limit)`);
+    }
+
+    const result = await callOpenAI(prompt, systemPrompt, openaiMaxTokens, temperature);
+    console.log('[AI Fallback] OpenAI succeeded!');
+    return result;
+  } catch (openaiError: any) {
+    console.error('[AI Fallback] OpenAI also failed:', openaiError.message);
+    console.error('[AI Fallback] Both Claude and OpenAI failed');
+    throw claudeError; // Throw original Claude error
+  }
+}
+
+/**
+ * LEGACY WRAPPER: retryWithBackoff
+ *
+ * For compatibility with existing code that passes Claude API call functions directly.
+ * New code should use callAIWithFallback() instead.
+ */
+async function retryWithBackoff<T>(claudeCall: () => Promise<T>): Promise<T> {
+  return await retryHelper(claudeCall);
+}
 
 // ============================================
 // DIY TEMPLATE ENFORCEMENT SYSTEM PROMPT
@@ -143,19 +216,6 @@ You have been allocated maximum tokens for this document. USE THEM ALL.
 
 
 type ProgressCallback = (stage: string, progress: number, message: string) => void;
-
-// Legacy retry function - now using retry-helper.ts
-// Kept for backward compatibility
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  maxRetries: number = 3,
-  baseDelay: number = 2000
-): Promise<T> {
-  return retryHelper(fn, {
-    maxRetries,
-    initialDelay: baseDelay,
-  });
-}
 
 export interface GenerationResult {
   document1: string; // Comprehensive Analysis
@@ -476,30 +536,14 @@ CRITICAL REQUIREMENTS:
 
 Generate the COMPLETE comprehensive analysis now (aim for maximum detail and length):`;
 
-    const response = await retryWithBackoff(() =>
-      anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 20480, // Increased by 25% from 16384 to prevent timeout truncation
-        temperature: 0.3,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      })
+    const textResponse = await callAIWithFallback(
+      prompt,
+      '',
+      20480,
+      0.3
     );
 
-    const content = response.content[0];
-
-    // If response was truncated, note this
-    let fullContent = content.type === 'text' ? content.text : '';
-
-    if (response.stop_reason === 'max_tokens') {
-      fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
-    }
-
-    return fullContent;
+    return textResponse;
   } catch (error) {
     logError('generateComprehensiveAnalysis', error);
     progressCallback?.('Generating Comprehensive Analysis', 35, 'Error - using fallback content');
@@ -720,30 +764,14 @@ CRITICAL REQUIREMENTS:
 
 Generate the COMPLETE publication analysis now (emphasizing tier-based quality assessment):`;
 
-    const response = await retryWithBackoff(() =>
-      anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 20480, // Increased by 25% from 16384 to prevent timeout truncation
-        temperature: 0.3,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-            },
-        ],
-      })
+    const textResponse = await callAIWithFallback(
+      prompt,
+      '',
+      20480,
+      0.3
     );
 
-    const content = response.content[0];
-
-    // If response was truncated, note this
-    let fullContent = content.type === 'text' ? content.text : '';
-
-    if (response.stop_reason === 'max_tokens') {
-      fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
-    }
-
-    return fullContent;
+    return textResponse;
   } catch (error) {
     logError('generatePublicationAnalysis', error);
     progressCallback?.('Generating Publication Analysis', 55, 'Error - using fallback content');
@@ -812,22 +840,14 @@ Generate a URL Reference Document with this EXACT structure:
 
 Generate the COMPLETE URL reference document now:`;
 
-    const response = await retryWithBackoff(() =>
-      anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 10240, // Increased by 25% from 8192 for more comprehensive URL reference
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      })
+    const textResponse = await callAIWithFallback(
+      prompt,
+      '',
+      10240,
+      0.2
     );
 
-    const content = response.content[0];
-    return content.type === 'text' ? content.text : '';
+    return textResponse;
   } catch (error) {
     logError('generateUrlReference', error);
     progressCallback?.('Generating URL Reference', 70, 'Error - using fallback content');
@@ -1125,30 +1145,14 @@ Generate the COMPLETE legal brief now:`;
   // Adjust max_tokens based on brief type
   const maxTokens = isStandard ? 16000 : 32000; // Standard: 16K, Comprehensive: 32K
 
-    const response = await retryWithBackoff(() =>
-      anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: maxTokens,
-        temperature: 0.2, // Lower temperature for strict template adherence
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      })
+    const textResponse = await callAIWithFallback(
+      prompt,
+      '',
+      maxTokens,
+      0.2
     );
 
-    const content = response.content[0];
-
-    // If response was truncated, note this
-    let fullContent = content.type === 'text' ? content.text : '';
-
-    if (response.stop_reason === 'max_tokens') {
-      fullContent += '\n\n[Note: This document was truncated due to token limits. For a complete analysis, consider breaking down the evaluation or requesting specific sections.]';
-    }
-
-    return fullContent;
+    return textResponse;
   } catch (error) {
     logError('generateLegalBrief', error);
     progressCallback?.('Generating Legal Brief', 80, 'Error - using fallback content');
@@ -1314,23 +1318,14 @@ Before final review and filing:
 
 Generate the COMPLETE evidence gap analysis now (be brutally honest about weaknesses):`;
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 16384,
-      temperature: 0.3,
-      messages: [{ role: 'user', content: prompt }],
-    })
+  const textResponse = await callAIWithFallback(
+    prompt,
+    '',
+    16384,
+    0.3
   );
 
-  const content = response.content[0];
-  let fullContent = content.type === 'text' ? content.text : '';
-
-  if (response.stop_reason === 'max_tokens') {
-    fullContent += '\n\n[Note: Analysis truncated due to token limits. Critical gaps and recommendations are included above.]';
-  }
-
-  return fullContent;
+  return textResponse;
 }
 
 /**
@@ -1416,17 +1411,14 @@ Respectfully submitted,
 
 Generate complete cover letter now:`;
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 2048,
-      temperature: 0.2,
-      messages: [{ role: 'user', content: prompt }],
-    })
+  const textResponse = await callAIWithFallback(
+    prompt,
+    '',
+    2048,
+    0.2
   );
 
-  const content = response.content[0];
-  return content.type === 'text' ? content.text : '';
+  return textResponse;
 }
 
 /**
@@ -1594,17 +1586,14 @@ ${gapAnalysis.substring(0, 8000)}
 
 Generate complete checklist now:`;
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 4096,
-      temperature: 0.3,
-      messages: [{ role: 'user', content: prompt }],
-    })
+  const textResponse = await callAIWithFallback(
+    prompt,
+    '',
+    4096,
+    0.3
   );
 
-  const content = response.content[0];
-  return content.type === 'text' ? content.text : '';
+  return textResponse;
 }
 
 /**
@@ -1770,17 +1759,14 @@ Volume II: Arabic numerals
 
 Generate complete exhibit guide now:`;
 
-  const response = await retryWithBackoff(() =>
-    anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 8192,
-      temperature: 0.2,
-      messages: [{ role: 'user', content: prompt }],
-    })
+  const textResponse = await callAIWithFallback(
+    prompt,
+    '',
+    8192,
+    0.2
   );
 
-  const content = response.content[0];
-  return content.type === 'text' ? content.text : '';
+  return textResponse;
 }
 
 // Export the new generation functions for integration

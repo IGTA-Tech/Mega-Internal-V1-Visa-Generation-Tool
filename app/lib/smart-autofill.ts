@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { callAIWithFallback } from './document-generator';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -146,25 +147,15 @@ IMPORTANT RULES:
 BEGIN EXTRACTION:`;
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 4096,
-      temperature: 0.2, // Low temperature for factual extraction
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    });
-
-    const content = response.content[0];
-    if (content.type !== 'text') {
-      throw new Error('Unexpected response type from Claude');
-    }
+    const textResponse = await callAIWithFallback(
+      prompt,
+      '', // no system prompt
+      4096, // max_tokens
+      0.2 // temperature
+    );
 
     // Parse JSON response
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('Could not parse JSON from Claude response');
     }

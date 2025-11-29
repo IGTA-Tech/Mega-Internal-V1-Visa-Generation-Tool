@@ -5,6 +5,7 @@ import {
   logError,
   safeJsonParse,
 } from './retry-helper';
+import { callAIWithFallback } from './document-generator';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -94,32 +95,15 @@ Include sources even if 60-70% confident. Be liberal in search.`;
   try {
     console.log(`[BeneficiaryLookup] Starting lookup for: ${name} (${profession})`);
 
-    const response = await retryWithBackoff(
-      () =>
-        anthropic.messages.create({
-          model: 'claude-sonnet-4-5-20250929',
-          max_tokens: 2048, // Reduced from 4096
-          temperature: 0.2, // Reduced for faster response
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-        }),
-      {
-        maxRetries: 3,
-        initialDelay: 1000,
-      }
+    const textResponse = await callAIWithFallback(
+      prompt,
+      '', // no system prompt
+      2048, // max_tokens
+      0.2 // temperature
     );
 
-    const content = response.content[0];
-    if (content.type !== 'text') {
-      throw new Error('Unexpected response type from Claude');
-    }
-
     // Parse the JSON response
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.warn('[BeneficiaryLookup] Could not find JSON in response');
       return createFallbackLookupResult();
