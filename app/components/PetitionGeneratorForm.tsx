@@ -715,25 +715,46 @@ export default function PetitionGeneratorForm() {
   const startGeneration = async () => {
     setCurrentStep('generating');
     setError('');
+    setProgress(0);
+    setCurrentStage('Initializing');
+    setCurrentMessage('Creating case and starting background job...');
 
     try {
-      const response = await fetch('/api/generate', {
+      // Call the generate API - this now triggers Inngest automatically
+      // Inngest handles the long-running document generation in the background
+      // with NO timeout limits (can run for 15-30+ minutes)
+      const createResponse = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           beneficiaryInfo,
           urls: lookupResult?.sources || [],
-          files: uploadedFiles,
+          uploadedFiles: uploadedFiles,
         }),
       });
 
-      if (!response.ok) throw new Error('Generation failed to start');
+      if (!createResponse.ok) throw new Error('Failed to create case');
 
-      const data = await response.json();
-      setCaseId(data.caseId);
+      const createData = await createResponse.json();
+      const newCaseId = createData.caseId;
+      setCaseId(newCaseId);
 
-      // Start polling for progress
-      pollProgress(data.caseId);
+      // Check if we need to fall back to the old process-job approach
+      if (createData.fallback) {
+        setCurrentMessage('Starting document generation (fallback mode)...');
+        // Only call process-job if Inngest failed
+        fetch(`/api/process-job/${newCaseId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }).catch(err => {
+          console.warn('Process job request error:', err);
+        });
+      } else {
+        setCurrentMessage('Document generation started in background. This will take 15-30 minutes...');
+      }
+
+      // Start polling for progress updates from the database
+      pollProgress(newCaseId);
     } catch (err: any) {
       setError(err.message || 'Failed to start generation');
       setCurrentStep('upload');

@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/app/lib/supabase-server';
-import { generateAllDocuments } from '@/app/lib/document-generator';
-import { BeneficiaryInfo } from '@/app/types';
+import { inngest } from '@/app/lib/inngest/client';
 import {
   logError,
   validateRequiredFields,
-  createSafeProgressCallback,
 } from '@/app/lib/retry-helper';
 
 export async function POST(request: NextRequest) {
@@ -23,7 +21,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { beneficiaryInfo, urls } = body;
+    const { beneficiaryInfo, urls, uploadedFiles } = body;
 
     // Validate required fields
     const validation = validateRequiredFields(
@@ -53,18 +51,19 @@ export async function POST(request: NextRequest) {
           .insert({
             case_id: caseId,
             beneficiary_name: beneficiaryInfo.fullName,
-            profession: beneficiaryInfo.profession,
+            profession: beneficiaryInfo.profession || beneficiaryInfo.fieldOfProfession || 'Not specified',
             visa_type: beneficiaryInfo.visaType,
             nationality: beneficiaryInfo.nationality,
             current_status: beneficiaryInfo.currentStatus,
-            field_of_expertise: beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.profession,
-            background_info: beneficiaryInfo.backgroundInfo,
+            field_of_expertise: beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.profession || beneficiaryInfo.fieldOfProfession,
+            background_info: beneficiaryInfo.backgroundInfo || beneficiaryInfo.background,
             petitioner_name: beneficiaryInfo.petitionerName,
             petitioner_organization: beneficiaryInfo.petitionerOrganization,
             additional_info: beneficiaryInfo.additionalInfo,
             status: 'initializing',
             progress_percentage: 0,
-            current_stage: 'Starting generation',
+            current_stage: 'Queued for processing',
+            current_message: 'Your petition is queued and will start processing shortly...',
           })
           .select()
           .single();
@@ -103,14 +102,107 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Start generation in background (fire-and-forget)
-    generateDocumentsInBackground(caseId, beneficiaryInfo, urls || [], supabase);
+    // Store uploaded files metadata in database (if Supabase available)
+    if (uploadedFiles && uploadedFiles.length > 0 && supabase) {
+      try {
+        const fileRecords = uploadedFiles.map((file: any) => ({
+          case_id: caseId,
+          filename: file.filename || file.name,
+          file_type: file.fileType || file.type || 'pdf',
+          file_size_bytes: file.size || 0,
+          mime_type: file.mimeType,
+          extracted_text: file.extractedText,
+          word_count: file.wordCount,
+          processing_status: 'completed',
+          storage_path: `uploads/${caseId}/${file.filename || file.name}`,
+        }));
 
+        await supabase.from('case_files').insert(fileRecords);
+        console.log(`[Generate] Stored ${fileRecords.length} file records in database`);
+      } catch (fileError: any) {
+        logError('Database - store files', fileError, { caseId });
+      }
+    }
+
+    // TRIGGER INNGEST BACKGROUND JOB
+    // This is the key change - we send an event to Inngest which will
+    // run the document generation in the background with NO timeout limits
+    try {
+      console.log(`[Generate] Triggering Inngest job for case ${caseId}...`);
+
+      await inngest.send({
+        name: 'petition/generate',
+        data: {
+          caseId,
+          beneficiaryInfo: {
+            fullName: beneficiaryInfo.fullName,
+            profession: beneficiaryInfo.profession || beneficiaryInfo.fieldOfProfession || 'Not specified',
+            visaType: beneficiaryInfo.visaType,
+            nationality: beneficiaryInfo.nationality,
+            currentStatus: beneficiaryInfo.currentStatus,
+            fieldOfExpertise: beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.profession || beneficiaryInfo.fieldOfProfession,
+            backgroundInfo: beneficiaryInfo.backgroundInfo || beneficiaryInfo.background,
+            petitionerName: beneficiaryInfo.petitionerName,
+            petitionerOrganization: beneficiaryInfo.petitionerOrganization,
+            additionalInfo: beneficiaryInfo.additionalInfo,
+            recipientEmail: beneficiaryInfo.recipientEmail,
+            briefType: beneficiaryInfo.briefType || 'comprehensive',
+          },
+          urls: (urls || []).map((url: any) => ({
+            url: url.url || url,
+            title: url.title,
+            description: url.description,
+            sourceType: url.sourceType || 'manual',
+            sourceName: url.sourceName,
+            tier: url.tier || url.sourceTier,
+          })),
+          uploadedFiles: (uploadedFiles || []).map((file: any) => ({
+            filename: file.filename || file.name,
+            fileType: file.fileType || file.type || 'pdf',
+            extractedText: file.extractedText,
+            wordCount: file.wordCount,
+          })),
+        },
+      });
+
+      console.log(`[Generate] Inngest job triggered successfully for case ${caseId}`);
+
+      // Update status to show job is queued
+      if (supabase) {
+        await supabase
+          .from('petition_cases')
+          .update({
+            status: 'researching',
+            current_stage: 'Processing',
+            current_message: 'Document generation started in background...',
+          })
+          .eq('case_id', caseId);
+      }
+    } catch (inngestError: any) {
+      logError('Inngest - send event', inngestError, { caseId });
+
+      // If Inngest fails, fall back to the old process-job endpoint
+      console.warn('[Generate] Inngest failed, falling back to process-job endpoint');
+
+      return NextResponse.json({
+        success: true,
+        caseId,
+        message: 'Case created. Inngest unavailable - use process endpoint.',
+        progressEndpoint: `/api/progress/${caseId}`,
+        processEndpoint: `/api/process-job/${caseId}`,
+        status: 'ready',
+        fallback: true,
+      });
+    }
+
+    // Return immediately - Inngest will handle the rest
     return NextResponse.json({
       success: true,
       caseId,
-      message: 'Generation started. Check progress endpoint for status.',
+      message: 'Document generation started! This will take 15-30 minutes.',
       progressEndpoint: `/api/progress/${caseId}`,
+      status: 'processing',
+      estimatedTime: '15-30 minutes',
     });
   } catch (error: any) {
     logError('generate POST', error, { caseId });
@@ -149,112 +241,4 @@ function generateCaseId(name: string): string {
     .substring(0, 4)
     .toUpperCase();
   return `${nameHash}${timestamp}`;
-}
-
-// Background generation function
-async function generateDocumentsInBackground(
-  caseId: string,
-  beneficiaryInfo: BeneficiaryInfo,
-  urls: any[],
-  supabase: any = null
-) {
-
-  try {
-    console.log(`[Background] Starting background generation for case ${caseId}`);
-
-    // Update progress function with error handling (if Supabase available)
-    const updateProgress = async (stage: string, progress: number, message: string) => {
-      if (!supabase) {
-        console.log(`[Progress] ${stage} - ${progress}% - ${message}`);
-        return;
-      }
-
-      try {
-        await supabase
-          .from('petition_cases')
-          .update({
-            status: progress === 100 ? 'completed' : 'generating',
-            progress_percentage: progress,
-            current_stage: stage,
-            current_message: message,
-            updated_at: new Date().toISOString(),
-            completed_at: progress === 100 ? new Date().toISOString() : null,
-          })
-          .eq('case_id', caseId);
-      } catch (progressError) {
-        logError('updateProgress', progressError, { caseId, stage, progress });
-        // Don't throw - just log and continue
-      }
-    };
-
-    // Create safe progress callback
-    const safeProgress = createSafeProgressCallback(updateProgress);
-
-    // Prepare beneficiary info with URLs
-    const enrichedBeneficiaryInfo = {
-      ...beneficiaryInfo,
-      primaryUrls: urls.map((u: any) => u.url || u),
-      urls: urls,
-    };
-
-    // Generate all documents with safe progress
-    const result = await generateAllDocuments(enrichedBeneficiaryInfo, safeProgress);
-
-    // Store generated documents with error handling
-    const documents = [
-      { number: 1, name: 'Comprehensive Analysis', type: 'analysis', content: result.document1 },
-      { number: 2, name: 'Publication Analysis', type: 'analysis', content: result.document2 },
-      { number: 3, name: 'URL Reference', type: 'reference', content: result.document3 },
-      { number: 4, name: 'Legal Brief', type: 'brief', content: result.document4 },
-      { number: 5, name: 'Evidence Gap Analysis', type: 'analysis', content: result.document5 },
-      { number: 6, name: 'USCIS Cover Letter', type: 'letter', content: result.document6 },
-      { number: 7, name: 'Visa Checklist', type: 'checklist', content: result.document7 },
-      { number: 8, name: 'Exhibit Assembly Guide', type: 'guide', content: result.document8 },
-    ];
-
-    let savedCount = 0;
-
-    // Save to database if Supabase available
-    if (supabase) {
-      for (const doc of documents) {
-        try {
-          await supabase.from('generated_documents').insert({
-            case_id: caseId,
-            document_number: doc.number,
-            document_name: doc.name,
-            document_type: doc.type,
-            content: doc.content,
-            word_count: doc.content.split(/\s+/).length,
-            page_estimate: Math.ceil(doc.content.split(/\s+/).length / 500),
-            storage_url: `generated/${caseId}/document-${doc.number}.md`,
-          });
-          savedCount++;
-        } catch (docError) {
-          logError(`Save document ${doc.number}`, docError, { caseId, docName: doc.name });
-          // Continue saving other documents
-        }
-      }
-      console.log(`✅ Successfully generated and saved ${savedCount}/${documents.length} documents to database for case ${caseId}`);
-    } else {
-      console.log(`✅ Successfully generated ${documents.length} documents for case ${caseId} (not saved to database - Supabase not available)`);
-    }
-  } catch (error: any) {
-    logError('generateDocumentsInBackground', error, { caseId });
-
-    // Update case with error - use safe approach (if Supabase available)
-    if (supabase) {
-      try {
-        await supabase
-          .from('petition_cases')
-          .update({
-            status: 'failed',
-            error_message: error.message || 'Unknown error during generation',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('case_id', caseId);
-      } catch (updateError) {
-        logError('Database - update failed status', updateError, { caseId });
-      }
-    }
-  }
 }

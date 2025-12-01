@@ -92,7 +92,7 @@ export async function generateExhibitPackage(
           exhibitLetter,
           originalUrl: source.url,
           archiveUrl: archivedResult.archiveUrl,
-          pdfUrl: pdfResult.FileUrl,
+          pdfUrl: pdfResult.FileUrl || null,
           title: source.title,
           success: true,
         };
@@ -158,8 +158,8 @@ export async function generateExhibitPackage(
     const successfulExhibits = exhibits.filter(e => e.success && e.pdfUrl);
     const pdfUrls = [
       tocPdfResult.FileUrl,
-      ...successfulExhibits.map(e => e.pdfUrl!),
-    ];
+      ...successfulExhibits.map(e => e.pdfUrl),
+    ].filter((url): url is string => url !== null && url !== undefined);
 
     let combinedPdfUrl: string | null = null;
 
@@ -170,7 +170,7 @@ export async function generateExhibitPackage(
           fileName: `Exhibit_Package_${caseId}.pdf`,
         });
 
-        combinedPdfUrl = mergedResult.FileUrl;
+        combinedPdfUrl = mergedResult.FileUrl || null;
       } catch (error) {
         console.error('Failed to merge PDFs:', error);
         // If merge fails, we still have individual PDFs
@@ -183,7 +183,7 @@ export async function generateExhibitPackage(
     return {
       caseId,
       exhibits,
-      tableOfContentsUrl: tocPdfResult.FileUrl,
+      tableOfContentsUrl: tocPdfResult.FileUrl || null,
       combinedPdfUrl,
       totalExhibits: exhibits.length,
       successfulExhibits: successCount,

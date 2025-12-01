@@ -109,7 +109,11 @@ Include sources even if 60-70% confident. Be liberal in search.`;
       return createFallbackLookupResult();
     }
 
-    const result = safeJsonParse(jsonMatch[0], {});
+    const result = safeJsonParse(jsonMatch[0], {}) as {
+      sources?: BeneficiarySource[];
+      searchStrategy?: string;
+      verificationData?: BeneficiaryLookupResult['verificationData'];
+    };
 
     // Validate and structure the result
     const sources: BeneficiarySource[] = Array.isArray(result.sources) ? result.sources : [];

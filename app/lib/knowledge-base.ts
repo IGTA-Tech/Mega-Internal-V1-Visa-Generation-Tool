@@ -45,6 +45,11 @@ const VISA_TYPE_FILES: Record<VisaType, string[]> = {
     'Master mega prompt Visa making.md',
     'policy memeos visas EB1a and O-1.md',
   ],
+  'EB-2 NIW': [
+    'O1A_O1B_P1A_EB1A_profesional_evaluationRAG.md',
+    'Master mega prompt Visa making.md',
+    'policy memeos visas.md',
+  ],
 };
 
 export async function getKnowledgeBaseFiles(visaType: VisaType): Promise<KnowledgeBaseFile[]> {
@@ -83,6 +88,7 @@ export function extractRelevantSections(content: string, visaType: VisaType): st
     'O-1B': ['SECTION 4: O-1B', 'O-1B CRITERIA', 'SECTION 6: PUBLICATION', 'SECTION 8: LEGAL BRIEF'],
     'P-1A': ['SECTION 5: P-1A', 'P-1A CRITERIA', 'SECTION 6: PUBLICATION', 'SECTION 8: LEGAL BRIEF'],
     'EB-1A': ['SECTION 2: EB-1A', 'EB-1A CRITERIA', 'SECTION 6: PUBLICATION', 'SECTION 8: LEGAL BRIEF', 'KAZARIAN'],
+    'EB-2 NIW': ['NATIONAL INTEREST', 'NIW', 'SECTION 6: PUBLICATION', 'SECTION 8: LEGAL BRIEF'],
   };
 
   const markers = sectionMarkers[visaType];

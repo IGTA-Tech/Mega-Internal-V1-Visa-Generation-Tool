@@ -19,9 +19,16 @@ interface UrlSource {
 }
 
 export async function POST(request: NextRequest) {
+  let fullName = '';
+  let profession = '';
+  let visaType = '';
+
   try {
     const body = await request.json();
-    const { fullName, profession, visaType, urls } = body;
+    fullName = body.fullName || '';
+    profession = body.profession || '';
+    visaType = body.visaType || '';
+    const { urls } = body;
 
     // Validate required fields
     if (!fullName || !profession || !visaType) {

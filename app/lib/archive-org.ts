@@ -43,7 +43,7 @@ export async function archiveUrl(url: string): Promise<ArchivedUrl> {
 
     return {
       originalUrl: url,
-      archiveUrl,
+      archiveUrl: archivedUrl,
       archivedAt: new Date(),
       success: true,
     };

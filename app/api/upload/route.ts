@@ -114,9 +114,9 @@ export async function POST(request: NextRequest) {
           try {
             console.log(`[Upload] Processing text from ${file.name}`);
             const processedFile = await processFile(buffer, file.name);
-            extractedText = processedFile.text;
+            extractedText = processedFile.extractedText;
             pageCount = processedFile.pageCount || 0;
-            console.log(`[Upload] Extracted ${extractedText.split(/\s+/).length} words from ${file.name}`);
+            console.log(`[Upload] Extracted ${processedFile.wordCount} words from ${file.name}`);
           } catch (error: any) {
             logError('processFile', error, { fileName: file.name });
             // Continue even if processing fails

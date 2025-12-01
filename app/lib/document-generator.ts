@@ -559,6 +559,14 @@ async function generatePublicationAnalysis(
   progressCallback?: ProgressCallback
 ): Promise<string> {
   try {
+  // Helper to convert tier string to number for sorting/comparison
+  const getTierNumber = (tier: string): number => {
+    if (tier === 'Major Media') return 1;
+    if (tier === 'Trade Publication') return 2;
+    if (tier === 'Online Media') return 3;
+    return 4; // Unknown
+  };
+
   // Smart filtering: Focus on up to 60 most relevant URLs
   // Prioritize by tier quality and content relevance
   let relevantUrls = urls;
@@ -567,27 +575,27 @@ async function generatePublicationAnalysis(
     const sortedByQuality = [...urls].sort((a, b) => {
       const qualityA = analyzePublicationQuality(a.domain);
       const qualityB = analyzePublicationQuality(b.domain);
-      return qualityA.tier - qualityB.tier;
+      return getTierNumber(qualityA.tier) - getTierNumber(qualityB.tier);
     });
     relevantUrls = sortedByQuality.slice(0, 60);
     console.log(`Filtered ${urls.length} URLs down to top 60 by publication quality`);
   }
 
   // Categorize URLs by tier for analysis
-  const tier1Urls = relevantUrls.filter(url => analyzePublicationQuality(url.domain).tier === 1);
-  const tier2Urls = relevantUrls.filter(url => analyzePublicationQuality(url.domain).tier === 2);
-  const tier3Urls = relevantUrls.filter(url => analyzePublicationQuality(url.domain).tier === 3);
+  const tier1Urls = relevantUrls.filter(url => getTierNumber(analyzePublicationQuality(url.domain).tier) === 1);
+  const tier2Urls = relevantUrls.filter(url => getTierNumber(analyzePublicationQuality(url.domain).tier) === 2);
+  const tier3Urls = relevantUrls.filter(url => getTierNumber(analyzePublicationQuality(url.domain).tier) === 3);
 
   const urlDetails = relevantUrls
     .map((url, i) => {
       const quality = analyzePublicationQuality(url.domain);
+      const tierNum = getTierNumber(quality.tier);
       return `URL ${i + 1}:
 - Link: ${url.url}
 - Domain: ${url.domain}
 - Title: ${url.title}
-- Tier: ${quality.tier} (${quality.tier === 1 ? 'Gold Standard' : quality.tier === 2 ? 'Strong/Industry' : 'Supplementary'})
+- Tier: ${quality.tier} (${tierNum === 1 ? 'Gold Standard' : tierNum === 2 ? 'Strong/Industry' : 'Supplementary'})
 - Estimated Reach: ${quality.estimatedReach}
-- Publication Type: ${quality.publicationType || 'General'}
 - Content Preview: ${url.content.substring(0, 1500)}...
 `;
     })

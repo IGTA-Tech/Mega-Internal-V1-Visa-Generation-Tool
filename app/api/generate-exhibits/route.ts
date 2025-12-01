@@ -55,8 +55,11 @@ export async function POST(request: NextRequest) {
         .eq('case_id', caseId);
     }
 
-    // Progress update function
-    const onProgress = async (stage: string, progress: number, message: string) => {
+    // Progress update function - adapted for exhibit generator signature
+    const onProgress = async (stage: string, current: number, total: number) => {
+      const progress = total > 0 ? Math.round((current / total) * 100) : 0;
+      const message = `Processing ${current} of ${total} exhibits`;
+
       if (!supabase) {
         console.log(`[ExhibitProgress] ${stage} - ${progress}% - ${message}`);
         return;
@@ -95,7 +98,7 @@ export async function POST(request: NextRequest) {
 async function generateExhibitsInBackground(
   caseId: string,
   exhibitSources: any[],
-  onProgress: (stage: string, progress: number, message: string) => void
+  onProgress: (stage: string, current: number, total: number) => void
 ) {
   try {
     const supabase = getSupabaseClient();

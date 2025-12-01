@@ -138,7 +138,7 @@ Provide a complete title analysis following the BENEFICIARY_TITLE_RESEARCH_GUIDE
     }
 
     // If no JSON found, create a default analysis
-    const fieldOfWork = beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.fieldOfProfession;
+    const fieldOfWork = beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.fieldOfProfession || beneficiaryInfo.profession || 'Professional Field';
     return {
       title: beneficiaryInfo.jobTitle || beneficiaryInfo.occupation || 'Professional',
       level_descriptor: 'professional',
@@ -512,7 +512,7 @@ Primary Focus: ${titleAnalysis.primary_criteria.join(', ')}`;
     console.error('Error in Perplexity research:', error);
 
     // Return minimal result on error
-    const fieldOfWork = beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.fieldOfProfession;
+    const fieldOfWork = beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.fieldOfProfession || beneficiaryInfo.profession || 'Professional Field';
     return {
       titleAnalysis: {
         title: beneficiaryInfo.jobTitle || 'Professional',
