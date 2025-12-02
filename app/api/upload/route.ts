@@ -1,14 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/app/lib/supabase-server';
 import { processFile } from '@/app/lib/file-processor';
-import {
-  retryWithBackoff,
-  logError,
-} from '@/app/lib/retry-helper';
+import { logError } from '@/app/lib/retry-helper';
+
+// Try to get Supabase client - returns null if unavailable
+function getOptionalSupabase() {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      console.log('[Upload] Supabase not configured - running in local mode');
+      return null;
+    }
+
+    const { createClient } = require('@supabase/supabase-js');
+    return createClient(supabaseUrl, supabaseKey);
+  } catch (error) {
+    console.warn('[Upload] Failed to initialize Supabase:', error);
+    return null;
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = getSupabaseClient();
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
     const caseId = formData.get('caseId') as string;
@@ -21,26 +35,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Optional: Verify case exists if caseId provided
-    if (caseId) {
-      const { data: caseData, error: caseError } = await supabase
-        .from('petition_cases')
-        .select('case_id')
-        .eq('case_id', caseId)
-        .single();
-
-      if (caseError || !caseData) {
-        return NextResponse.json(
-          { error: 'Case not found' },
-          { status: 404 }
-        );
-      }
-    }
-
+    const supabase = getOptionalSupabase();
     const uploadedFiles = [];
     const failedFiles = [];
 
-    console.log(`[Upload] Processing ${files.length} file(s)${caseId ? ` for case ${caseId}` : ''}`);
+    console.log(`[Upload] Processing ${files.length} file(s)${caseId ? ` for case ${caseId}` : ''} (Supabase: ${supabase ? 'available' : 'local mode'})`);
 
     for (const file of files) {
       try {
@@ -55,7 +54,7 @@ export async function POST(request: NextRequest) {
         ];
 
         if (!allowedTypes.includes(file.type)) {
-          throw new Error(`File type ${file.type} not supported`);
+          throw new Error(`File type ${file.type} not supported. Allowed: PDF, DOCX, DOC, JPG, PNG, TXT`);
         }
 
         // Validate file size (max 50MB)
@@ -67,44 +66,46 @@ export async function POST(request: NextRequest) {
         const arrayBuffer = await file.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
-        // Upload to Supabase Storage with retry
         const timestamp = Date.now();
         const fileName = `${timestamp}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
         const storagePath = caseId
           ? `uploads/${caseId}/${fileName}`
           : `uploads/temp/${fileName}`;
 
-        console.log(`[Upload] Uploading ${file.name} to ${storagePath}`);
+        let storageUrl = '';
+        let storageSuccess = false;
 
-        await retryWithBackoff(
-          async () => {
-            const { data, error } = await supabase.storage
+        // Try to upload to Supabase if available
+        if (supabase) {
+          try {
+            console.log(`[Upload] Uploading ${file.name} to Supabase storage`);
+
+            const { error } = await supabase.storage
               .from('petition-files')
               .upload(storagePath, buffer, {
                 contentType: file.type,
-                upsert: false,
+                upsert: true,
               });
 
             if (error) {
-              throw new Error(`Upload failed: ${error.message}`);
+              console.warn(`[Upload] Supabase upload failed: ${error.message}`);
+            } else {
+              const { data: urlData } = supabase.storage
+                .from('petition-files')
+                .getPublicUrl(storagePath);
+              storageUrl = urlData.publicUrl;
+              storageSuccess = true;
+              console.log(`[Upload] Uploaded to Supabase: ${storagePath}`);
             }
-
-            return data;
-          },
-          {
-            maxRetries: 3,
-            initialDelay: 1000,
+          } catch (supabaseError) {
+            console.warn('[Upload] Supabase storage error:', supabaseError);
           }
-        );
+        }
 
-        // Get public URL
-        const { data: urlData } = supabase.storage
-          .from('petition-files')
-          .getPublicUrl(storagePath);
-
-        // Process file to extract text (for PDFs, DOCX)
+        // Process file to extract text (the important part for generation)
         let extractedText = '';
         let pageCount = 0;
+        let wordCount = 0;
 
         if (
           file.type === 'application/pdf' ||
@@ -112,101 +113,73 @@ export async function POST(request: NextRequest) {
           file.type.includes('document')
         ) {
           try {
-            console.log(`[Upload] Processing text from ${file.name}`);
+            console.log(`[Upload] Extracting text from ${file.name}`);
             const processedFile = await processFile(buffer, file.name);
             extractedText = processedFile.extractedText;
             pageCount = processedFile.pageCount || 0;
-            console.log(`[Upload] Extracted ${processedFile.wordCount} words from ${file.name}`);
-          } catch (error: any) {
-            logError('processFile', error, { fileName: file.name });
-            // Continue even if processing fails
+            wordCount = processedFile.wordCount || 0;
+            console.log(`[Upload] Extracted ${wordCount} words, ${pageCount} pages from ${file.name}`);
+          } catch (processError) {
+            logError('processFile', processError, { fileName: file.name });
+            console.warn(`[Upload] Text extraction failed for ${file.name}, continuing...`);
           }
+        } else if (file.type === 'text/plain') {
+          // Handle plain text files directly
+          extractedText = buffer.toString('utf-8');
+          wordCount = extractedText.split(/\s+/).filter(w => w.length > 0).length;
+          pageCount = 1;
         }
 
-        // Store file metadata in database if caseId provided
-        if (caseId) {
-          // Determine file type category
-          let fileTypeCategory: string;
-          if (file.type === 'application/pdf') {
-            fileTypeCategory = 'pdf';
-          } else if (file.type.includes('word') || file.type.includes('document')) {
-            fileTypeCategory = 'docx';
-          } else if (file.type.startsWith('image/')) {
-            fileTypeCategory = 'image';
-          } else {
-            fileTypeCategory = 'txt';
-          }
-
-          try {
-            await retryWithBackoff(
-              async () => {
-                const { error } = await supabase.from('case_files').insert({
-                  case_id: caseId,
-                  filename: file.name,
-                  file_type: fileTypeCategory,
-                  file_size_bytes: file.size,
-                  mime_type: file.type,
-                  storage_path: storagePath,
-                  storage_url: urlData.publicUrl,
-                  extracted_text: extractedText,
-                  word_count: extractedText ? extractedText.split(/\s+/).length : 0,
-                  uploaded_at: new Date().toISOString(),
-                });
-
-                if (error) {
-                  throw new Error(`Database insert failed: ${error.message}`);
-                }
-              },
-              {
-                maxRetries: 3,
-                initialDelay: 1000,
-              }
-            );
-
-            console.log(`[Upload] Saved metadata for ${file.name} to database`);
-          } catch (dbError) {
-            logError('Database - save file metadata', dbError, { fileName: file.name, caseId });
-            // Continue - file is uploaded even if metadata save fails
-          }
-        }
-
+        // File processed successfully - add to uploaded list
         uploadedFiles.push({
           fileName: file.name,
           fileType: file.type,
           fileSize: file.size,
-          storagePath,
-          storageUrl: urlData.publicUrl,
+          storagePath: storageSuccess ? storagePath : '',
+          storageUrl,
           extractedText,
           pageCount,
+          wordCount,
+          storedInCloud: storageSuccess,
         });
 
-        console.log(`[Upload] Successfully processed ${file.name}`);
-      } catch (fileError: any) {
+        console.log(`[Upload] Successfully processed ${file.name} (cloud: ${storageSuccess}, text: ${extractedText.length > 0})`);
+      } catch (fileError) {
+        const errorMessage = fileError instanceof Error ? fileError.message : 'Unknown error';
         logError('Upload file', fileError, { fileName: file.name });
         failedFiles.push({
           fileName: file.name,
-          error: fileError.message,
+          error: errorMessage,
         });
-        // Continue processing other files
       }
     }
 
-    const message = failedFiles.length > 0
-      ? `Uploaded ${uploadedFiles.length} file(s), ${failedFiles.length} failed`
-      : `Successfully uploaded ${uploadedFiles.length} file(s)`;
+    // Determine success based on whether we got useful data
+    const successCount = uploadedFiles.length;
+    const failCount = failedFiles.length;
+
+    let message: string;
+    if (failCount === 0) {
+      message = `Successfully processed ${successCount} file(s)`;
+    } else if (successCount > 0) {
+      message = `Processed ${successCount} file(s), ${failCount} failed`;
+    } else {
+      message = `All ${failCount} file(s) failed to process`;
+    }
 
     console.log(`[Upload] ${message}`);
 
     return NextResponse.json({
-      success: true,
+      success: successCount > 0,
       message,
       files: uploadedFiles,
-      failed: failedFiles.length > 0 ? failedFiles : undefined,
+      failed: failCount > 0 ? failedFiles : undefined,
     });
-  } catch (error: any) {
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Failed to upload files';
     logError('upload POST', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to upload files' },
+      { error: errorMessage },
       { status: 500 }
     );
   }
@@ -214,8 +187,6 @@ export async function POST(request: NextRequest) {
 
 // GET endpoint to retrieve uploaded files for a case
 export async function GET(request: NextRequest) {
-  const supabase = getSupabaseClient();
-
   try {
     const { searchParams } = new URL(request.url);
     const caseId = searchParams.get('caseId');
@@ -227,39 +198,46 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const supabase = getOptionalSupabase();
+
+    // If Supabase not available, return empty (files are in-memory only)
+    if (!supabase) {
+      console.log(`[Upload GET] Supabase not available - files only exist in session`);
+      return NextResponse.json({
+        success: true,
+        files: [],
+        message: 'Files stored in session only (cloud storage not configured)',
+      });
+    }
+
     console.log(`[Upload GET] Fetching files for case ${caseId}`);
 
-    // Get files from database with retry
-    const files = await retryWithBackoff(
-      async () => {
-        const { data, error } = await supabase
-          .from('case_files')
-          .select('*')
-          .eq('case_id', caseId)
-          .order('uploaded_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('case_files')
+      .select('*')
+      .eq('case_id', caseId)
+      .order('uploaded_at', { ascending: false });
 
-        if (error) {
-          throw new Error(`Failed to get files: ${error.message}`);
-        }
+    if (error) {
+      console.warn(`[Upload GET] Database error: ${error.message}`);
+      return NextResponse.json({
+        success: true,
+        files: [],
+        message: 'Could not fetch files from database',
+      });
+    }
 
-        return data || [];
-      },
-      {
-        maxRetries: 3,
-        initialDelay: 1000,
-      }
-    );
-
-    console.log(`[Upload GET] Found ${files.length} file(s) for case ${caseId}`);
+    console.log(`[Upload GET] Found ${data?.length || 0} file(s) for case ${caseId}`);
 
     return NextResponse.json({
       success: true,
-      files,
+      files: data || [],
     });
-  } catch (error: any) {
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Failed to get uploaded files';
     logError('upload GET', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to get uploaded files' },
+      { error: errorMessage },
       { status: 500 }
     );
   }

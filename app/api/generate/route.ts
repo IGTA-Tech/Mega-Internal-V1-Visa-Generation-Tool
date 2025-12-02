@@ -1,22 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/app/lib/supabase-server';
 import { inngest } from '@/app/lib/inngest/client';
 import {
   logError,
   validateRequiredFields,
 } from '@/app/lib/retry-helper';
+import { initProgress, setProgress } from '@/app/lib/progress-store';
+
+// Try to get Supabase client - returns null if unavailable
+function getOptionalSupabase() {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      return null;
+    }
+
+    const { createClient } = require('@supabase/supabase-js');
+    return createClient(supabaseUrl, supabaseKey);
+  } catch {
+    return null;
+  }
+}
 
 export async function POST(request: NextRequest) {
   let caseId: string | null = null;
-  let supabase: any = null;
 
-  // Try to initialize Supabase, but don't fail if it's not configured
-  try {
-    supabase = getSupabaseClient();
+  // Try to get Supabase - returns null if not available
+  const supabase = getOptionalSupabase();
+  if (supabase) {
     console.log('[Generate] Supabase connected successfully');
-  } catch (supabaseError: any) {
-    console.warn('[Generate] Supabase not available:', supabaseError.message);
-    console.warn('[Generate] Continuing without database - documents will still generate');
+  } else {
+    console.log('[Generate] Supabase not available - using in-memory progress tracking');
   }
 
   try {
@@ -42,6 +57,10 @@ export async function POST(request: NextRequest) {
     // Generate case ID
     caseId = generateCaseId(beneficiaryInfo.fullName);
     console.log(`[Generate] Generated case ID: ${caseId}`);
+
+    // Always initialize in-memory progress (works even without Supabase)
+    initProgress(caseId);
+    console.log(`[Generate] Initialized in-memory progress for ${caseId}`);
 
     // Create case in database with error handling (if Supabase available)
     if (supabase) {
@@ -167,18 +186,26 @@ export async function POST(request: NextRequest) {
 
       console.log(`[Generate] Inngest job triggered successfully for case ${caseId}`);
 
-      // Update status to show job is queued
+      // Update status in both in-memory store and database
+      setProgress(caseId, {
+        status: 'researching',
+        progress: 5,
+        currentStage: 'Processing',
+        currentMessage: 'Document generation started in background...',
+      });
+
       if (supabase) {
         await supabase
           .from('petition_cases')
           .update({
             status: 'researching',
+            progress_percentage: 5,
             current_stage: 'Processing',
             current_message: 'Document generation started in background...',
           })
           .eq('case_id', caseId);
       }
-    } catch (inngestError: any) {
+    } catch (inngestError) {
       logError('Inngest - send event', inngestError, { caseId });
 
       // If Inngest fails, fall back to the old process-job endpoint

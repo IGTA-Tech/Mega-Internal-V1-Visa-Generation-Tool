@@ -1,8 +1,26 @@
 import { inngest } from './client';
 import { generateAllDocuments } from '../document-generator';
-import { getSupabaseClient } from '../supabase-server';
 import { logError } from '../retry-helper';
 import { BeneficiaryInfo } from '../../types';
+import { setProgress, completeProgress, failProgress } from '../progress-store';
+import { sendDocumentsEmail } from '../email-service';
+
+// Try to get Supabase client - returns null if unavailable
+function getOptionalSupabase() {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      return null;
+    }
+
+    const { createClient } = require('@supabase/supabase-js');
+    return createClient(supabaseUrl, supabaseKey);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Inngest function for generating visa petition documents
@@ -26,32 +44,41 @@ export const generatePetitionFunction = inngest.createFunction(
   async ({ event, step }) => {
     const { caseId, beneficiaryInfo, urls, uploadedFiles } = event.data;
 
-    let supabase: ReturnType<typeof getSupabaseClient> | null = null;
-
-    try {
-      supabase = getSupabaseClient();
-    } catch (e) {
-      console.warn('[Inngest] Supabase not available:', e);
+    // Try to get Supabase - returns null if not available
+    const supabase = getOptionalSupabase();
+    if (supabase) {
+      console.log('[Inngest] Supabase connected');
+    } else {
+      console.log('[Inngest] Running without Supabase - using in-memory progress');
     }
 
-    // Helper to update progress in database
+    // Helper to update progress in BOTH in-memory store and database
     const updateProgress = async (stage: string, percentage: number, message: string) => {
-      if (!supabase) return;
+      // Always update in-memory store
+      setProgress(caseId, {
+        status: percentage === 100 ? 'completed' : 'generating',
+        progress: percentage,
+        currentStage: stage,
+        currentMessage: message,
+      });
 
-      try {
-        await supabase
-          .from('petition_cases')
-          .update({
-            status: percentage === 100 ? 'completed' : 'generating',
-            progress_percentage: percentage,
-            current_stage: stage,
-            current_message: message,
-            updated_at: new Date().toISOString(),
-            ...(percentage === 100 ? { completed_at: new Date().toISOString() } : {}),
-          })
-          .eq('case_id', caseId);
-      } catch (error) {
-        logError('Inngest updateProgress', error, { caseId, stage, percentage });
+      // Also update database if available
+      if (supabase) {
+        try {
+          await supabase
+            .from('petition_cases')
+            .update({
+              status: percentage === 100 ? 'completed' : 'generating',
+              progress_percentage: percentage,
+              current_stage: stage,
+              current_message: message,
+              updated_at: new Date().toISOString(),
+              ...(percentage === 100 ? { completed_at: new Date().toISOString() } : {}),
+            })
+            .eq('case_id', caseId);
+        } catch (error) {
+          logError('Inngest updateProgress DB', error, { caseId, stage, percentage });
+        }
       }
     };
 
@@ -170,22 +197,85 @@ export const generatePetitionFunction = inngest.createFunction(
       return { saved: true, count: savedCount };
     });
 
-    // Step 5: Mark as completed
+    // Step 5: Mark as completed and store in-memory results
     await step.run('mark-completed', async () => {
       console.log(`[Inngest] Marking case ${caseId} as completed`);
-      await updateProgress('Complete', 100, 'All 8 documents generated successfully!');
 
+      // Store documents in in-memory progress for retrieval
+      const documents = [
+        { name: 'Comprehensive Analysis', content: result.document1, pageCount: Math.ceil((result.document1?.split(/\s+/).length || 0) / 500), wordCount: result.document1?.split(/\s+/).length || 0 },
+        { name: 'Publication Analysis', content: result.document2, pageCount: Math.ceil((result.document2?.split(/\s+/).length || 0) / 500), wordCount: result.document2?.split(/\s+/).length || 0 },
+        { name: 'URL Reference', content: result.document3, pageCount: Math.ceil((result.document3?.split(/\s+/).length || 0) / 500), wordCount: result.document3?.split(/\s+/).length || 0 },
+        { name: 'Legal Brief', content: result.document4, pageCount: Math.ceil((result.document4?.split(/\s+/).length || 0) / 500), wordCount: result.document4?.split(/\s+/).length || 0 },
+        { name: 'Evidence Gap Analysis', content: result.document5, pageCount: Math.ceil((result.document5?.split(/\s+/).length || 0) / 500), wordCount: result.document5?.split(/\s+/).length || 0 },
+        { name: 'USCIS Cover Letter', content: result.document6, pageCount: Math.ceil((result.document6?.split(/\s+/).length || 0) / 500), wordCount: result.document6?.split(/\s+/).length || 0 },
+        { name: 'Visa Checklist', content: result.document7, pageCount: Math.ceil((result.document7?.split(/\s+/).length || 0) / 500), wordCount: result.document7?.split(/\s+/).length || 0 },
+        { name: 'Exhibit Assembly Guide', content: result.document8, pageCount: Math.ceil((result.document8?.split(/\s+/).length || 0) / 500), wordCount: result.document8?.split(/\s+/).length || 0 },
+      ];
+
+      // Update in-memory store with completed status and documents
+      completeProgress(caseId, documents);
+
+      // Also update database
       if (supabase) {
         await supabase
           .from('petition_cases')
           .update({
             status: 'completed',
+            progress_percentage: 100,
+            current_stage: 'Complete',
+            current_message: 'All 8 documents generated successfully!',
             completed_at: new Date().toISOString(),
           })
           .eq('case_id', caseId);
       }
 
-      return { completed: true };
+      return { completed: true, documentCount: documents.length };
+    });
+
+    // Step 6: Send email with documents (if email provided)
+    await step.run('send-email', async () => {
+      if (!beneficiaryInfo.recipientEmail) {
+        console.log(`[Inngest] No recipient email provided, skipping email send`);
+        return { sent: false, reason: 'no-email' };
+      }
+
+      console.log(`[Inngest] Sending documents to ${beneficiaryInfo.recipientEmail}`);
+
+      try {
+        const documents = [
+          { name: 'Document 1 - Comprehensive Analysis', content: result.document1, pageCount: Math.ceil((result.document1?.split(/\s+/).length || 0) / 500) },
+          { name: 'Document 2 - Publication Analysis', content: result.document2, pageCount: Math.ceil((result.document2?.split(/\s+/).length || 0) / 500) },
+          { name: 'Document 3 - URL Reference', content: result.document3, pageCount: Math.ceil((result.document3?.split(/\s+/).length || 0) / 500) },
+          { name: 'Document 4 - Legal Brief', content: result.document4, pageCount: Math.ceil((result.document4?.split(/\s+/).length || 0) / 500) },
+          { name: 'Document 5 - Evidence Gap Analysis', content: result.document5, pageCount: Math.ceil((result.document5?.split(/\s+/).length || 0) / 500) },
+          { name: 'Document 6 - USCIS Cover Letter', content: result.document6, pageCount: Math.ceil((result.document6?.split(/\s+/).length || 0) / 500) },
+          { name: 'Document 7 - Visa Checklist', content: result.document7, pageCount: Math.ceil((result.document7?.split(/\s+/).length || 0) / 500) },
+          { name: 'Document 8 - Exhibit Assembly Guide', content: result.document8, pageCount: Math.ceil((result.document8?.split(/\s+/).length || 0) / 500) },
+        ];
+
+        // Reconstruct beneficiary info for email
+        const emailBeneficiaryInfo: BeneficiaryInfo = {
+          fullName: beneficiaryInfo.fullName,
+          profession: beneficiaryInfo.profession,
+          visaType: beneficiaryInfo.visaType,
+          recipientEmail: beneficiaryInfo.recipientEmail,
+          briefType: beneficiaryInfo.briefType,
+        };
+
+        const emailSent = await sendDocumentsEmail(emailBeneficiaryInfo, documents);
+
+        if (emailSent) {
+          console.log(`[Inngest] Email sent successfully to ${beneficiaryInfo.recipientEmail}`);
+          return { sent: true, email: beneficiaryInfo.recipientEmail };
+        } else {
+          console.warn(`[Inngest] Email sending returned false`);
+          return { sent: false, reason: 'send-failed' };
+        }
+      } catch (emailError) {
+        logError('Inngest send-email', emailError, { caseId, email: beneficiaryInfo.recipientEmail });
+        return { sent: false, reason: 'error', error: String(emailError) };
+      }
     });
 
     // Return summary
