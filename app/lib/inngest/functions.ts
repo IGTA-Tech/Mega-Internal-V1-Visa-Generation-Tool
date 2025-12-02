@@ -1,9 +1,20 @@
 import { inngest } from './client';
-import { generateAllDocuments } from '../document-generator';
 import { logError } from '../retry-helper';
 import { BeneficiaryInfo } from '../../types';
-import { setProgress, completeProgress, failProgress } from '../progress-store';
+import { setProgress, completeProgress } from '../progress-store';
 import { sendDocumentsEmail } from '../email-service';
+import {
+  prepareGenerationContext,
+  generateDocument1,
+  generateDocument2,
+  generateDocument3,
+  generateDocument4,
+  generateDocument5,
+  generateDocument6,
+  generateDocument7,
+  generateDocument8,
+  PreparationData,
+} from '../document-steps';
 
 // Try to get Supabase client - returns null if unavailable
 function getOptionalSupabase() {
@@ -25,16 +36,14 @@ function getOptionalSupabase() {
 /**
  * Inngest function for generating visa petition documents
  *
- * This runs as a background job with NO timeout limits.
- * Can run for 15-30+ minutes without issues.
+ * REFACTORED: Each document is generated in its own step to avoid timeouts.
+ * Each step should complete within 5 minutes.
  */
 export const generatePetitionFunction = inngest.createFunction(
   {
     id: 'generate-petition-documents',
     name: 'Generate Visa Petition Documents',
-    // Retry configuration
     retries: 2,
-    // Cancel any existing runs for the same case
     concurrency: {
       limit: 1,
       key: 'event.data.caseId',
@@ -44,17 +53,11 @@ export const generatePetitionFunction = inngest.createFunction(
   async ({ event, step }) => {
     const { caseId, beneficiaryInfo, urls, uploadedFiles } = event.data;
 
-    // Try to get Supabase - returns null if not available
     const supabase = getOptionalSupabase();
-    if (supabase) {
-      console.log('[Inngest] Supabase connected');
-    } else {
-      console.log('[Inngest] Running without Supabase - using in-memory progress');
-    }
+    console.log(`[Inngest] Starting for case ${caseId}, Supabase: ${supabase ? 'connected' : 'unavailable'}`);
 
-    // Helper to update progress in BOTH in-memory store and database
+    // Helper to update progress
     const updateProgress = async (stage: string, percentage: number, message: string) => {
-      // Always update in-memory store
       setProgress(caseId, {
         status: percentage === 100 ? 'completed' : 'generating',
         progress: percentage,
@@ -62,7 +65,6 @@ export const generatePetitionFunction = inngest.createFunction(
         currentMessage: message,
       });
 
-      // Also update database if available
       if (supabase) {
         try {
           await supabase
@@ -73,29 +75,30 @@ export const generatePetitionFunction = inngest.createFunction(
               current_stage: stage,
               current_message: message,
               updated_at: new Date().toISOString(),
-              ...(percentage === 100 ? { completed_at: new Date().toISOString() } : {}),
             })
             .eq('case_id', caseId);
         } catch (error) {
-          logError('Inngest updateProgress DB', error, { caseId, stage, percentage });
+          logError('updateProgress DB', error, { caseId });
         }
       }
     };
 
     // Step 1: Mark as started
     await step.run('mark-started', async () => {
-      console.log(`[Inngest] Starting generation for case ${caseId}`);
-      await updateProgress('Starting', 1, 'Initializing document generation...');
+      console.log(`[Inngest] Step 1: Starting for case ${caseId}`);
+      await updateProgress('Starting', 5, 'Initializing document generation...');
       return { started: true };
     });
 
     // Step 2: Prepare beneficiary info
-    const preparedInfo = await step.run('prepare-beneficiary-info', async () => {
-      // Reconstruct beneficiary info with proper format
+    const preparedInfo = await step.run('prepare-info', async () => {
+      console.log(`[Inngest] Step 2: Preparing beneficiary info`);
+      await updateProgress('Preparing', 8, 'Preparing beneficiary information...');
+
       const info: BeneficiaryInfo = {
         fullName: beneficiaryInfo.fullName,
         profession: beneficiaryInfo.profession,
-        visaType: beneficiaryInfo.visaType as any,
+        visaType: beneficiaryInfo.visaType,
         nationality: beneficiaryInfo.nationality,
         currentStatus: beneficiaryInfo.currentStatus,
         fieldOfExpertise: beneficiaryInfo.fieldOfExpertise,
@@ -105,13 +108,10 @@ export const generatePetitionFunction = inngest.createFunction(
         additionalInfo: beneficiaryInfo.additionalInfo,
         recipientEmail: beneficiaryInfo.recipientEmail,
         briefType: beneficiaryInfo.briefType,
-        // Map URLs
         primaryUrls: urls.map((u: { url: string }) => u.url),
-        urls: urls,
-        // Map uploaded files
         uploadedFiles: uploadedFiles.map((f: { filename: string; fileType: string; extractedText?: string; wordCount?: number }) => ({
           filename: f.filename,
-          fileType: f.fileType as any,
+          fileType: f.fileType,
           extractedText: f.extractedText || '',
           wordCount: f.wordCount || 0,
         })),
@@ -120,58 +120,93 @@ export const generatePetitionFunction = inngest.createFunction(
       return info;
     });
 
-    // Step 3: Generate all documents (THE LONG-RUNNING PART)
-    // This can take 15-30 minutes - Inngest handles it!
-    const result = await step.run('generate-documents', async () => {
-      console.log(`[Inngest] Generating documents for case ${caseId}...`);
-
-      // Create progress callback that updates Supabase
-      const progressCallback = async (stage: string, progress: number, message: string) => {
-        await updateProgress(stage, progress, message);
-      };
-
-      // Generate all 8 documents
-      // Cast to any to handle Inngest serialization of dates
-      const generationResult = await generateAllDocuments(preparedInfo as any, progressCallback);
-
-      return {
-        document1: generationResult.document1,
-        document2: generationResult.document2,
-        document3: generationResult.document3,
-        document4: generationResult.document4,
-        document5: generationResult.document5,
-        document6: generationResult.document6,
-        document7: generationResult.document7,
-        document8: generationResult.document8,
-        urlsAnalyzed: generationResult.urlsAnalyzed.length,
-        filesProcessed: generationResult.filesProcessed,
-      };
+    // Step 3: Prepare context (knowledge base, URLs)
+    const prepData: PreparationData = await step.run('prepare-context', async () => {
+      console.log(`[Inngest] Step 3: Preparing generation context`);
+      await updateProgress('Preparing Context', 10, 'Loading knowledge base and fetching URLs...');
+      return await prepareGenerationContext(preparedInfo as BeneficiaryInfo);
     });
 
-    // Step 4: Save documents to database
+    // Step 4: Generate Document 1 - Comprehensive Analysis
+    const document1 = await step.run('generate-doc-1', async () => {
+      console.log(`[Inngest] Step 4: Generating Document 1`);
+      await updateProgress('Document 1', 20, 'Generating Comprehensive Analysis...');
+      return await generateDocument1(preparedInfo as BeneficiaryInfo, prepData as PreparationData);
+    });
+
+    // Step 5: Generate Document 2 - Publication Analysis
+    const document2 = await step.run('generate-doc-2', async () => {
+      console.log(`[Inngest] Step 5: Generating Document 2`);
+      await updateProgress('Document 2', 35, 'Generating Publication Analysis...');
+      return await generateDocument2(preparedInfo as BeneficiaryInfo, prepData as PreparationData, document1);
+    });
+
+    // Step 6: Generate Document 3 - URL Reference
+    const document3 = await step.run('generate-doc-3', async () => {
+      console.log(`[Inngest] Step 6: Generating Document 3`);
+      await updateProgress('Document 3', 45, 'Generating URL Reference...');
+      return await generateDocument3(preparedInfo as BeneficiaryInfo, prepData as PreparationData);
+    });
+
+    // Step 7: Generate Document 4 - Legal Brief
+    const document4 = await step.run('generate-doc-4', async () => {
+      console.log(`[Inngest] Step 7: Generating Document 4`);
+      await updateProgress('Document 4', 55, 'Generating Legal Brief...');
+      return await generateDocument4(preparedInfo as BeneficiaryInfo, prepData as PreparationData, document1, document2);
+    });
+
+    // Step 8: Generate Document 5 - Evidence Gap Analysis
+    const document5 = await step.run('generate-doc-5', async () => {
+      console.log(`[Inngest] Step 8: Generating Document 5`);
+      await updateProgress('Document 5', 65, 'Generating Evidence Gap Analysis...');
+      return await generateDocument5(preparedInfo as BeneficiaryInfo, prepData as PreparationData, document1);
+    });
+
+    // Step 9: Generate Document 6 - Cover Letter
+    const document6 = await step.run('generate-doc-6', async () => {
+      console.log(`[Inngest] Step 9: Generating Document 6`);
+      await updateProgress('Document 6', 75, 'Generating Cover Letter...');
+      return await generateDocument6(preparedInfo as BeneficiaryInfo, document1);
+    });
+
+    // Step 10: Generate Document 7 - Visa Checklist
+    const document7 = await step.run('generate-doc-7', async () => {
+      console.log(`[Inngest] Step 10: Generating Document 7`);
+      await updateProgress('Document 7', 82, 'Generating Visa Checklist...');
+      return await generateDocument7(preparedInfo as BeneficiaryInfo, document5);
+    });
+
+    // Step 11: Generate Document 8 - Exhibit Guide
+    const document8 = await step.run('generate-doc-8', async () => {
+      console.log(`[Inngest] Step 11: Generating Document 8`);
+      await updateProgress('Document 8', 90, 'Generating Exhibit Assembly Guide...');
+      return await generateDocument8(preparedInfo as BeneficiaryInfo, prepData as PreparationData, document4);
+    });
+
+    // Step 12: Save to database
     await step.run('save-documents', async () => {
+      console.log(`[Inngest] Step 12: Saving documents`);
+      await updateProgress('Saving', 95, 'Saving documents to database...');
+
       if (!supabase) {
-        console.log('[Inngest] Skipping database save - Supabase not available');
+        console.log('[Inngest] Skipping DB save - Supabase unavailable');
         return { saved: false };
       }
 
-      console.log(`[Inngest] Saving documents for case ${caseId}...`);
-
       const documents = [
-        { number: 1, name: 'Comprehensive Analysis', type: 'analysis', content: result.document1 },
-        { number: 2, name: 'Publication Analysis', type: 'analysis', content: result.document2 },
-        { number: 3, name: 'URL Reference', type: 'reference', content: result.document3 },
-        { number: 4, name: 'Legal Brief', type: 'brief', content: result.document4 },
-        { number: 5, name: 'Evidence Gap Analysis', type: 'analysis', content: result.document5 },
-        { number: 6, name: 'USCIS Cover Letter', type: 'letter', content: result.document6 },
-        { number: 7, name: 'Visa Checklist', type: 'checklist', content: result.document7 },
-        { number: 8, name: 'Exhibit Assembly Guide', type: 'guide', content: result.document8 },
+        { number: 1, name: 'Comprehensive Analysis', type: 'analysis', content: document1 },
+        { number: 2, name: 'Publication Analysis', type: 'analysis', content: document2 },
+        { number: 3, name: 'URL Reference', type: 'reference', content: document3 },
+        { number: 4, name: 'Legal Brief', type: 'brief', content: document4 },
+        { number: 5, name: 'Evidence Gap Analysis', type: 'analysis', content: document5 },
+        { number: 6, name: 'USCIS Cover Letter', type: 'letter', content: document6 },
+        { number: 7, name: 'Visa Checklist', type: 'checklist', content: document7 },
+        { number: 8, name: 'Exhibit Assembly Guide', type: 'guide', content: document8 },
       ];
 
-      let savedCount = 0;
       for (const doc of documents) {
         try {
-          const { error } = await supabase
+          await supabase
             .from('generated_documents')
             .upsert({
               case_id: caseId,
@@ -181,42 +216,33 @@ export const generatePetitionFunction = inngest.createFunction(
               content: doc.content,
               word_count: doc.content?.split(/\s+/).length || 0,
               page_estimate: Math.ceil((doc.content?.split(/\s+/).length || 0) / 500),
-              storage_url: `generated/${caseId}/document-${doc.number}.md`,
               generated_at: new Date().toISOString(),
-            }, {
-              onConflict: 'case_id,document_number',
-            });
-
-          if (!error) savedCount++;
-        } catch (docError) {
-          logError(`Save document ${doc.number}`, docError, { caseId, docName: doc.name });
+            }, { onConflict: 'case_id,document_number' });
+        } catch (error) {
+          logError(`Save doc ${doc.number}`, error, { caseId });
         }
       }
 
-      console.log(`[Inngest] Saved ${savedCount}/${documents.length} documents for case ${caseId}`);
-      return { saved: true, count: savedCount };
+      return { saved: true };
     });
 
-    // Step 5: Mark as completed and store in-memory results
+    // Step 13: Mark completed
     await step.run('mark-completed', async () => {
-      console.log(`[Inngest] Marking case ${caseId} as completed`);
+      console.log(`[Inngest] Step 13: Marking complete`);
 
-      // Store documents in in-memory progress for retrieval
       const documents = [
-        { name: 'Comprehensive Analysis', content: result.document1, pageCount: Math.ceil((result.document1?.split(/\s+/).length || 0) / 500), wordCount: result.document1?.split(/\s+/).length || 0 },
-        { name: 'Publication Analysis', content: result.document2, pageCount: Math.ceil((result.document2?.split(/\s+/).length || 0) / 500), wordCount: result.document2?.split(/\s+/).length || 0 },
-        { name: 'URL Reference', content: result.document3, pageCount: Math.ceil((result.document3?.split(/\s+/).length || 0) / 500), wordCount: result.document3?.split(/\s+/).length || 0 },
-        { name: 'Legal Brief', content: result.document4, pageCount: Math.ceil((result.document4?.split(/\s+/).length || 0) / 500), wordCount: result.document4?.split(/\s+/).length || 0 },
-        { name: 'Evidence Gap Analysis', content: result.document5, pageCount: Math.ceil((result.document5?.split(/\s+/).length || 0) / 500), wordCount: result.document5?.split(/\s+/).length || 0 },
-        { name: 'USCIS Cover Letter', content: result.document6, pageCount: Math.ceil((result.document6?.split(/\s+/).length || 0) / 500), wordCount: result.document6?.split(/\s+/).length || 0 },
-        { name: 'Visa Checklist', content: result.document7, pageCount: Math.ceil((result.document7?.split(/\s+/).length || 0) / 500), wordCount: result.document7?.split(/\s+/).length || 0 },
-        { name: 'Exhibit Assembly Guide', content: result.document8, pageCount: Math.ceil((result.document8?.split(/\s+/).length || 0) / 500), wordCount: result.document8?.split(/\s+/).length || 0 },
+        { name: 'Comprehensive Analysis', content: document1, pageCount: Math.ceil((document1?.length || 0) / 3000), wordCount: document1?.split(/\s+/).length || 0 },
+        { name: 'Publication Analysis', content: document2, pageCount: Math.ceil((document2?.length || 0) / 3000), wordCount: document2?.split(/\s+/).length || 0 },
+        { name: 'URL Reference', content: document3, pageCount: Math.ceil((document3?.length || 0) / 3000), wordCount: document3?.split(/\s+/).length || 0 },
+        { name: 'Legal Brief', content: document4, pageCount: Math.ceil((document4?.length || 0) / 3000), wordCount: document4?.split(/\s+/).length || 0 },
+        { name: 'Evidence Gap Analysis', content: document5, pageCount: Math.ceil((document5?.length || 0) / 3000), wordCount: document5?.split(/\s+/).length || 0 },
+        { name: 'USCIS Cover Letter', content: document6, pageCount: Math.ceil((document6?.length || 0) / 3000), wordCount: document6?.split(/\s+/).length || 0 },
+        { name: 'Visa Checklist', content: document7, pageCount: Math.ceil((document7?.length || 0) / 3000), wordCount: document7?.split(/\s+/).length || 0 },
+        { name: 'Exhibit Assembly Guide', content: document8, pageCount: Math.ceil((document8?.length || 0) / 3000), wordCount: document8?.split(/\s+/).length || 0 },
       ];
 
-      // Update in-memory store with completed status and documents
       completeProgress(caseId, documents);
 
-      // Also update database
       if (supabase) {
         await supabase
           .from('petition_cases')
@@ -230,65 +256,45 @@ export const generatePetitionFunction = inngest.createFunction(
           .eq('case_id', caseId);
       }
 
-      return { completed: true, documentCount: documents.length };
+      return { completed: true };
     });
 
-    // Step 6: Send email with documents (if email provided)
+    // Step 14: Send email
     await step.run('send-email', async () => {
       if (!beneficiaryInfo.recipientEmail) {
-        console.log(`[Inngest] No recipient email provided, skipping email send`);
-        return { sent: false, reason: 'no-email' };
+        console.log(`[Inngest] No email provided, skipping`);
+        return { sent: false };
       }
 
-      console.log(`[Inngest] Sending documents to ${beneficiaryInfo.recipientEmail}`);
+      console.log(`[Inngest] Step 14: Sending email to ${beneficiaryInfo.recipientEmail}`);
 
       try {
-        const documents = [
-          { name: 'Document 1 - Comprehensive Analysis', content: result.document1, pageCount: Math.ceil((result.document1?.split(/\s+/).length || 0) / 500) },
-          { name: 'Document 2 - Publication Analysis', content: result.document2, pageCount: Math.ceil((result.document2?.split(/\s+/).length || 0) / 500) },
-          { name: 'Document 3 - URL Reference', content: result.document3, pageCount: Math.ceil((result.document3?.split(/\s+/).length || 0) / 500) },
-          { name: 'Document 4 - Legal Brief', content: result.document4, pageCount: Math.ceil((result.document4?.split(/\s+/).length || 0) / 500) },
-          { name: 'Document 5 - Evidence Gap Analysis', content: result.document5, pageCount: Math.ceil((result.document5?.split(/\s+/).length || 0) / 500) },
-          { name: 'Document 6 - USCIS Cover Letter', content: result.document6, pageCount: Math.ceil((result.document6?.split(/\s+/).length || 0) / 500) },
-          { name: 'Document 7 - Visa Checklist', content: result.document7, pageCount: Math.ceil((result.document7?.split(/\s+/).length || 0) / 500) },
-          { name: 'Document 8 - Exhibit Assembly Guide', content: result.document8, pageCount: Math.ceil((result.document8?.split(/\s+/).length || 0) / 500) },
+        const docs = [
+          { name: 'Document 1 - Comprehensive Analysis', content: document1, pageCount: 1 },
+          { name: 'Document 2 - Publication Analysis', content: document2, pageCount: 1 },
+          { name: 'Document 3 - URL Reference', content: document3, pageCount: 1 },
+          { name: 'Document 4 - Legal Brief', content: document4, pageCount: 1 },
+          { name: 'Document 5 - Evidence Gap Analysis', content: document5, pageCount: 1 },
+          { name: 'Document 6 - USCIS Cover Letter', content: document6, pageCount: 1 },
+          { name: 'Document 7 - Visa Checklist', content: document7, pageCount: 1 },
+          { name: 'Document 8 - Exhibit Assembly Guide', content: document8, pageCount: 1 },
         ];
 
-        // Reconstruct beneficiary info for email
-        const emailBeneficiaryInfo: BeneficiaryInfo = {
-          fullName: beneficiaryInfo.fullName,
-          profession: beneficiaryInfo.profession,
-          visaType: beneficiaryInfo.visaType,
-          recipientEmail: beneficiaryInfo.recipientEmail,
-          briefType: beneficiaryInfo.briefType,
-        };
-
-        const emailSent = await sendDocumentsEmail(emailBeneficiaryInfo, documents);
-
-        if (emailSent) {
-          console.log(`[Inngest] Email sent successfully to ${beneficiaryInfo.recipientEmail}`);
-          return { sent: true, email: beneficiaryInfo.recipientEmail };
-        } else {
-          console.warn(`[Inngest] Email sending returned false`);
-          return { sent: false, reason: 'send-failed' };
-        }
-      } catch (emailError) {
-        logError('Inngest send-email', emailError, { caseId, email: beneficiaryInfo.recipientEmail });
-        return { sent: false, reason: 'error', error: String(emailError) };
+        await sendDocumentsEmail(preparedInfo as BeneficiaryInfo, docs);
+        return { sent: true };
+      } catch (error) {
+        logError('send-email', error, { caseId });
+        return { sent: false, error: String(error) };
       }
     });
 
-    // Return summary
     return {
       success: true,
       caseId,
       documentsGenerated: 8,
-      urlsAnalyzed: result.urlsAnalyzed,
-      filesProcessed: result.filesProcessed,
       message: 'All documents generated successfully',
     };
   }
 );
 
-// Export all functions for the Inngest serve handler
 export const inngestFunctions = [generatePetitionFunction];
