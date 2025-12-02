@@ -29,13 +29,19 @@ const MAX_AGE = 4 * 60 * 60 * 1000; // 4 hours
 // Cleanup old progress entries
 function cleanupOldEntries() {
   const now = Date.now();
-  for (const [caseId, data] of progressStore.entries()) {
+  const keysToDelete: string[] = [];
+
+  progressStore.forEach((data, caseId) => {
     const createdAt = new Date(data.createdAt).getTime();
     if (now - createdAt > MAX_AGE) {
-      progressStore.delete(caseId);
-      console.log(`[ProgressStore] Cleaned up old entry: ${caseId}`);
+      keysToDelete.push(caseId);
     }
-  }
+  });
+
+  keysToDelete.forEach(caseId => {
+    progressStore.delete(caseId);
+    console.log(`[ProgressStore] Cleaned up old entry: ${caseId}`);
+  });
 }
 
 // Start cleanup interval
