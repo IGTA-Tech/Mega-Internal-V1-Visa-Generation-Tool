@@ -29,6 +29,10 @@ yarn-error.log*
 .env*.local
 .env
 
+# Secret files - DO NOT COMMIT
+setup-secrets.sh
+API_KEYS_BACKUP.txt
+
 # vercel
 .vercel
 
