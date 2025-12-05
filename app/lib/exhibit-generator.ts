@@ -1,6 +1,6 @@
 import Api2Pdf from 'api2pdf';
 import { archiveMultipleUrls, ArchivedUrl } from './archive-org';
-import { supabase } from './supabase';
+import { getSupabaseClient } from './supabase-server';
 
 const api2pdf = new Api2Pdf(process.env.API2PDF_API_KEY!);
 
@@ -99,17 +99,22 @@ export async function generateExhibitPackage(
 
         exhibits.push(exhibit);
 
-        // Store in database
-        await supabase.from('exhibit_pdfs').insert({
-          case_id: caseId,
-          exhibit_number: exhibitLetter,
-          exhibit_title: source.title,
-          source_url: source.url,
-          archive_url: archivedResult.archiveUrl,
-          pdf_storage_url: pdfResult.FileUrl,
-          generation_status: 'completed',
-          generated_at: new Date().toISOString(),
-        });
+        // Store in database (if Supabase is available)
+        try {
+          const supabase = getSupabaseClient();
+          await supabase.from('exhibit_pdfs').insert({
+            case_id: caseId,
+            exhibit_number: exhibitLetter,
+            exhibit_title: source.title,
+            source_url: source.url,
+            archive_url: archivedResult.archiveUrl,
+            pdf_storage_url: pdfResult.FileUrl,
+            generation_status: 'completed',
+            generated_at: new Date().toISOString(),
+          });
+        } catch (dbError) {
+          console.warn('Failed to store exhibit in database (continuing):', dbError);
+        }
       } catch (error) {
         console.error(`Failed to convert exhibit ${i + 1} to PDF:`, error);
 
@@ -125,16 +130,21 @@ export async function generateExhibitPackage(
 
         exhibits.push(exhibit);
 
-        // Store failed attempt in database
-        await supabase.from('exhibit_pdfs').insert({
-          case_id: caseId,
-          exhibit_number: String.fromCharCode(65 + i),
-          exhibit_title: source.title,
-          source_url: source.url,
-          archive_url: archivedResult.archiveUrl,
-          generation_status: 'failed',
-          generation_error: exhibit.error,
-        });
+        // Store failed attempt in database (if Supabase is available)
+        try {
+          const supabase = getSupabaseClient();
+          await supabase.from('exhibit_pdfs').insert({
+            case_id: caseId,
+            exhibit_number: String.fromCharCode(65 + i),
+            exhibit_title: source.title,
+            source_url: source.url,
+            archive_url: archivedResult.archiveUrl,
+            generation_status: 'failed',
+            generation_error: exhibit.error,
+          });
+        } catch (dbError) {
+          console.warn('Failed to store failed exhibit in database (continuing):', dbError);
+        }
       }
 
       // Small delay between conversions to avoid rate limiting
@@ -331,25 +341,31 @@ function generateTableOfContentsHtml(
  * Get exhibit package for a case from database
  */
 export async function getExhibitPackage(caseId: string): Promise<GeneratedExhibit[]> {
-  const { data, error } = await supabase
-    .from('exhibit_pdfs')
-    .select('*')
-    .eq('case_id', caseId)
-    .order('exhibit_number', { ascending: true });
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from('exhibit_pdfs')
+      .select('*')
+      .eq('case_id', caseId)
+      .order('exhibit_number', { ascending: true });
 
-  if (error) {
-    throw new Error(`Failed to get exhibit package: ${error.message}`);
+    if (error) {
+      throw new Error(`Failed to get exhibit package: ${error.message}`);
+    }
+
+    return (
+      data?.map(row => ({
+        exhibitLetter: row.exhibit_number,
+        originalUrl: row.source_url,
+        archiveUrl: row.archive_url,
+        pdfUrl: row.pdf_storage_url,
+        title: row.exhibit_title,
+        success: row.generation_status === 'completed',
+        error: row.generation_error || undefined,
+      })) || []
+    );
+  } catch (error) {
+    console.warn('Supabase not available for getExhibitPackage:', error);
+    return [];
   }
-
-  return (
-    data?.map(row => ({
-      exhibitLetter: row.exhibit_number,
-      originalUrl: row.source_url,
-      archiveUrl: row.archive_url,
-      pdfUrl: row.pdf_storage_url,
-      title: row.exhibit_title,
-      success: row.generation_status === 'completed',
-      error: row.generation_error || undefined,
-    })) || []
-  );
 }
