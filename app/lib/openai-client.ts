@@ -1,10 +1,26 @@
 // app/lib/openai-client.ts
 import OpenAI from 'openai';
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Lazy-loaded OpenAI client to avoid throwing errors at module load time
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI {
+  if (openaiClient) {
+    return openaiClient;
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  
+  if (!apiKey) {
+    throw new Error('Missing OPENAI_API_KEY environment variable');
+  }
+
+  openaiClient = new OpenAI({
+    apiKey: apiKey,
+  });
+
+  return openaiClient;
+}
 
 /**
  * Call OpenAI GPT-4o API
@@ -18,6 +34,7 @@ export async function callOpenAI(
 ): Promise<string> {
   console.log('[OpenAI Fallback] Calling GPT-4o...');
 
+  const openai = getOpenAIClient();
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
   if (systemPrompt) {
