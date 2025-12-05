@@ -17,11 +17,15 @@ COPY . .
 
 # Accept build-time args and expose them as env vars for next build
 ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG SUPABASE_SERVICE_ROLE_KEY
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 ENV SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY
+
+# Debug: Print environment variable status (without exposing values)
+RUN echo "Build environment check:" && \
+    echo "NEXT_PUBLIC_SUPABASE_URL is set: $([ -n "$NEXT_PUBLIC_SUPABASE_URL" ] && echo 'yes' || echo 'no')" && \
+    echo "SUPABASE_SERVICE_ROLE_KEY is set: $([ -n "$SUPABASE_SERVICE_ROLE_KEY" ] && echo 'yes' || echo 'no')"
+
 # Build the application
 RUN npm run build
 
