@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   eslint: {
     // ESLint rules are already relaxed in .eslintrc.json
     // This ensures build doesn't fail on warnings
