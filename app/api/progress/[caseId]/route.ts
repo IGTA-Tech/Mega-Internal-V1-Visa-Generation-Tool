@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProgress } from '@/app/lib/progress-store';
 
+// Ensure route is always dynamic and never cached
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 // Try to get Supabase client - returns null if unavailable
 function getOptionalSupabase() {
   try {
@@ -48,31 +52,65 @@ export async function GET(
           // Case found in database - return it
           console.log(`[Progress] Found case ${caseId} in database: status=${caseData.status}, progress=${caseData.progress_percentage}%`);
 
-          // If completed, get documents from database
+          // Get documents from database - check if they exist regardless of status
+          // This handles cases where documents are generated but status wasn't updated
           let documents = null;
-          if (caseData.status === 'completed') {
-            const { data: docsData } = await supabase
-              .from('generated_documents')
-              .select('*')
-              .eq('case_id', caseId)
-              .order('document_number');
+          const { data: docsData, error: docsError } = await supabase
+            .from('generated_documents')
+            .select('*')
+            .eq('case_id', caseId)
+            .order('document_number');
 
-            documents = docsData || null;
+          if (docsError) {
+            console.error(`[Progress] Error fetching documents for ${caseId}:`, docsError);
+          } else if (docsData && docsData.length > 0) {
+            documents = docsData;
+            console.log(`[Progress] Found ${docsData.length} documents for ${caseId}`);
+            
+            // If documents exist but status isn't completed, update it
+            if (caseData.status !== 'completed' && docsData.length >= 8) {
+              console.log(`[Progress] Documents exist but status is ${caseData.status}, updating to completed`);
+              await supabase
+                .from('petition_cases')
+                .update({
+                  status: 'completed',
+                  progress_percentage: 100,
+                  current_stage: 'Complete',
+                  current_message: `Successfully generated ${docsData.length} documents`,
+                  completed_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('case_id', caseId);
+              
+              // Update caseData for response
+              caseData.status = 'completed';
+              caseData.progress_percentage = 100;
+              caseData.current_stage = 'Complete';
+              caseData.current_message = `Successfully generated ${docsData.length} documents`;
+            }
           }
 
-          return NextResponse.json({
-            success: true,
-            caseId,
-            status: caseData.status || 'initializing',
-            progress: caseData.progress_percentage ?? 0,
-            currentStage: caseData.current_stage || 'Processing',
-            currentMessage: caseData.current_message || 'Initializing...',
-            errorMessage: caseData.error_message || null,
-            createdAt: caseData.created_at,
-            completedAt: caseData.completed_at || null,
-            documents,
-            source: 'database',
-          });
+          return NextResponse.json(
+            {
+              success: true,
+              caseId,
+              status: caseData.status || 'initializing',
+              progress: caseData.progress_percentage ?? 0,
+              currentStage: caseData.current_stage || 'Processing',
+              currentMessage: caseData.current_message || 'Initializing...',
+              errorMessage: caseData.error_message || null,
+              createdAt: caseData.created_at,
+              completedAt: caseData.completed_at || null,
+              documents,
+              source: 'database',
+            },
+            {
+              // Prevent any caching so the UI sees latest progress
+              headers: {
+                'Cache-Control': 'no-store, must-revalidate',
+              },
+            }
+          );
         } else {
           // No case data returned (shouldn't happen with single(), but handle it)
           console.log(`[Progress] Case ${caseId} query returned no data`);
@@ -87,19 +125,26 @@ export async function GET(
     if (inMemoryProgress) {
       console.log(`[Progress] Returning in-memory progress for ${caseId}: ${inMemoryProgress.progress}%`);
 
-      return NextResponse.json({
-        success: true,
-        caseId,
-        status: inMemoryProgress.status,
-        progress: inMemoryProgress.progress,
-        currentStage: inMemoryProgress.currentStage,
-        currentMessage: inMemoryProgress.currentMessage,
-        errorMessage: inMemoryProgress.errorMessage,
-        createdAt: inMemoryProgress.createdAt,
-        completedAt: inMemoryProgress.completedAt,
-        documents: inMemoryProgress.documents,
-        source: 'memory',
-      });
+      return NextResponse.json(
+        {
+          success: true,
+          caseId,
+          status: inMemoryProgress.status,
+          progress: inMemoryProgress.progress,
+          currentStage: inMemoryProgress.currentStage,
+          currentMessage: inMemoryProgress.currentMessage,
+          errorMessage: inMemoryProgress.errorMessage,
+          createdAt: inMemoryProgress.createdAt,
+          completedAt: inMemoryProgress.completedAt,
+          documents: inMemoryProgress.documents,
+          source: 'memory',
+        },
+        {
+          headers: {
+            'Cache-Control': 'no-store, must-revalidate',
+          },
+        }
+      );
     }
 
     // Case not found in either store

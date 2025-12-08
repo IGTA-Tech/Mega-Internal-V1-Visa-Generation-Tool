@@ -99,22 +99,36 @@ export async function POST(
       uploadedFiles: filesData || [],
     };
 
-    // Progress callback
+    // Progress callback - with better error handling and logging
     const updateProgress = async (stage: string, progress: number, message: string) => {
       try {
-        await supabase
+        const updateData: any = {
+          status: progress === 100 ? 'completed' : 'generating',
+          progress_percentage: progress,
+          current_stage: stage,
+          current_message: message,
+          updated_at: new Date().toISOString(),
+        };
+        
+        if (progress === 100) {
+          updateData.completed_at = new Date().toISOString();
+        }
+        
+        const { error, data } = await supabase
           .from('petition_cases')
-          .update({
-            status: progress === 100 ? 'completed' : 'generating',
-            progress_percentage: progress,
-            current_stage: stage,
-            current_message: message,
-            updated_at: new Date().toISOString(),
-            completed_at: progress === 100 ? new Date().toISOString() : null,
-          })
-          .eq('case_id', caseId);
+          .update(updateData)
+          .eq('case_id', caseId)
+          .select();
+        
+        if (error) {
+          console.error(`[ProcessJob] ❌ Failed to update progress for ${caseId}:`, error);
+          logError('updateProgress', error, { caseId, stage, progress, message });
+        } else {
+          console.log(`[ProcessJob] ✅ Updated progress for ${caseId}: ${progress}% - ${stage} - ${message}`);
+        }
       } catch (progressError) {
-        logError('updateProgress', progressError, { caseId, stage, progress });
+        console.error(`[ProcessJob] ❌ Exception updating progress for ${caseId}:`, progressError);
+        logError('updateProgress exception', progressError, { caseId, stage, progress, message });
       }
     };
 
@@ -225,6 +239,9 @@ export async function POST(
     }
 
     console.log(`[ProcessJob] ✅ Completed case ${caseId} - saved ${savedCount}/${documents.length} markdown documents`);
+
+    // CRITICAL: Update final completion status - this is what the frontend checks
+    await updateProgress('Complete', 100, `Successfully generated and saved ${savedCount} documents`);
 
     return NextResponse.json({
       success: true,
