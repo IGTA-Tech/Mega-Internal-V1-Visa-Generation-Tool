@@ -17,6 +17,8 @@ function getOpenAIClient(): OpenAI {
 
   openaiClient = new OpenAI({
     apiKey: apiKey,
+    timeout: 900000, // 15 minutes - increased for complex document generation (documents 5-8)
+    // Note: OpenAI SDK handles HTTP agent internally, timeout is sufficient
   });
 
   return openaiClient;

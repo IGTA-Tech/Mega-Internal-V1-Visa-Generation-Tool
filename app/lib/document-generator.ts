@@ -17,10 +17,19 @@ const http = require('http');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const https = require('https');
 
+// Configure HTTPS agent with extended timeouts for long-running AI requests
+// Documents 5-8 can take 10-15+ minutes to generate, so we need longer timeouts
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  timeout: 900000, // 15 minutes
+  keepAliveMsecs: 30000,
+});
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
-  timeout: 300000, // 5 minutes
+  timeout: 900000, // 15 minutes - increased for documents 5-8 which are more complex
   maxRetries: 0, // We handle retries ourselves in retryHelper
+  httpAgent: httpsAgent, // Use HTTPS agent for Anthropic API
 });
 
 /**
@@ -261,7 +270,7 @@ export async function generateAllDocuments(
   console.log('generateAllDocuments===========', beneficiaryInfo);
   try {
     // Stage 1: Read Knowledge Base (5%)
-    safeProgress('Reading Knowledge Base', 5, 'Loading visa petition knowledge base files...');
+    safeProgress('Reading Knowledge Base', 10, 'Loading visa petition knowledge base files...');
     const knowledgeBaseFiles = await getKnowledgeBaseFiles(beneficiaryInfo.visaType);
     const knowledgeBaseContext = buildKnowledgeBaseContext(knowledgeBaseFiles, beneficiaryInfo.visaType);
 
@@ -373,7 +382,7 @@ export async function generateAllDocuments(
     );
 
     // Stage 10: Generate Document 6 - USCIS Cover Letter (91%)
-    safeProgress('Generating Cover Letter', 91, 'Creating professional USCIS submission letter...');
+    safeProgress('Generating Cover Letter', 90, 'Creating professional USCIS submission letter...');
     const document6 = await generateCoverLetter(
       beneficiaryInfo,
       document1,
@@ -381,7 +390,7 @@ export async function generateAllDocuments(
     );
 
     // Stage 11: Generate Document 7 - Visa Checklist (94%)
-    safeProgress('Creating Visa Checklist', 94, 'Building quick reference scorecard...');
+    safeProgress('Creating Visa Checklist', 95, 'Building quick reference scorecard...');
     const document7 = await generateVisaChecklist(
       beneficiaryInfo,
       document5,
@@ -389,7 +398,7 @@ export async function generateAllDocuments(
     );
 
     // Stage 12: Generate Document 8 - Exhibit Assembly Guide (97%)
-    safeProgress('Generating Exhibit Guide', 97, 'Creating assembly instructions...');
+    safeProgress('Generating Exhibit Guide', 95, 'Creating assembly instructions...');
     const document8 = await generateExhibitGuide(
       beneficiaryInfo,
       urlsAnalyzed,

@@ -939,14 +939,14 @@ export default function PetitionGeneratorForm() {
         {/* Show all 8 expected documents with status */}
         <ul className="space-y-3">
           {[
-            { num: 1, name: 'Cover Letter' },
-            { num: 2, name: 'Beneficiary Background' },
-            { num: 3, name: 'Petitioner Background' },
-            { num: 4, name: 'Criteria Analysis (Part 1)' },
-            { num: 5, name: 'Criteria Analysis (Part 2)' },
-            { num: 6, name: 'Supporting Evidence Summary' },
-            { num: 7, name: 'Conclusion & Recommendation' },
-            { num: 8, name: 'Complete Petition Letter' }
+            { num: 1, name: 'Comprehensive Analysis' },
+            { num: 2, name: 'Publication Analysis' },
+            { num: 3, name: 'URL Reference' },
+            { num: 4, name: 'Legal Brief' },
+            { num: 5, name: 'Evidence Gap Analysis' },
+            { num: 6, name: 'USCIS Cover Letter' },
+            { num: 7, name: 'Visa Checklist' },
+            { num: 8, name: 'Exhibit Assembly Guide' }
           ].map(expected => {
             const doc = generatedDocuments.find(d => d.document_number === expected.num);
             const isSuccess = !!doc;
