@@ -3,6 +3,7 @@ import { inngest } from '@/app/lib/inngest/client';
 import {
   logError,
   validateRequiredFields,
+  retryWithBackoff,
 } from '@/app/lib/retry-helper';
 import { initProgress, setProgress } from '@/app/lib/progress-store';
 
@@ -144,12 +145,18 @@ export async function POST(request: NextRequest) {
     }
 
     // TRIGGER INNGEST BACKGROUND JOB
-    // This is the key change - we send an event to Inngest which will
-    // run the document generation in the background with NO timeout limits
-    try {
-      console.log(`[Generate] Triggering Inngest job for case ${caseId}...`);
+    // In development, always use direct processing (Inngest requires dev server)
+    // In production, use Inngest if configured, otherwise fall back to direct processing
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    const hasInngestConfig = !!(process.env.INNGEST_SIGNING_KEY || process.env.INNGEST_EVENT_KEY);
+    let useInngest = false;
+    
+    // Only use Inngest in production when properly configured
+    if (!isDevelopment && hasInngestConfig) {
+      try {
+        console.log(`[Generate] Attempting to trigger Inngest job for case ${caseId}...`);
 
-      await inngest.send({
+        await inngest.send({
         name: 'petition/generate',
         data: {
           caseId,
@@ -184,14 +191,15 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      console.log(`[Generate] Inngest job triggered successfully for case ${caseId}`);
+      console.log(`[Generate] Inngest event sent successfully for case ${caseId}`);
+      useInngest = true;
 
       // Update status in both in-memory store and database
       setProgress(caseId, {
         status: 'researching',
         progress: 5,
         currentStage: 'Processing',
-        currentMessage: 'Document generation started in background...',
+        currentMessage: 'Document generation started in background (Inngest)...',
       });
 
       if (supabase) {
@@ -201,24 +209,187 @@ export async function POST(request: NextRequest) {
             status: 'researching',
             progress_percentage: 5,
             current_stage: 'Processing',
-            current_message: 'Document generation started in background...',
+            current_message: 'Document generation started in background (Inngest)...',
           })
           .eq('case_id', caseId);
       }
-    } catch (inngestError) {
-      logError('Inngest - send event', inngestError, { caseId });
+      } catch (inngestError: any) {
+        logError('Inngest - send event', inngestError, { caseId });
+        console.warn('[Generate] Inngest send failed - will use direct processing');
+        useInngest = false;
+      }
+    } else {
+      if (isDevelopment) {
+        console.log('[Generate] Development mode - using direct processing (start Inngest dev server for Inngest: npx inngest-cli dev)');
+      } else {
+        console.log('[Generate] Inngest not configured - using direct processing');
+      }
+    }
 
-      // If Inngest fails, fall back to the old process-job endpoint
-      console.warn('[Generate] Inngest failed, falling back to process-job endpoint');
+    // If Inngest is not available or not configured, trigger direct processing immediately
+    if (!useInngest) {
+      console.log(`[Generate] Inngest unavailable - triggering direct processing for case ${caseId}`);
+      
+      // Update status
+      if (supabase) {
+        await supabase
+          .from('petition_cases')
+          .update({
+            status: 'researching',
+            progress_percentage: 5,
+            current_stage: 'Processing',
+            current_message: 'Document generation started (direct processing)...',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('case_id', caseId);
+      }
+
+      // Trigger process-job endpoint in background (fire-and-forget)
+      // Try to get the actual URL from request, environment, or use localhost
+      let baseUrl: string;
+      
+      // Get the host from the request if available
+      const requestHost = request.headers.get('host');
+      const requestProtocol = request.headers.get('x-forwarded-proto') || 
+                             (request.url.startsWith('https') ? 'https' : 'http');
+      
+      if (isDevelopment) {
+        // In development, try to use the request host first, then fallback to localhost
+        // This helps avoid issues with server-side fetch to localhost
+        if (requestHost) {
+          baseUrl = `http://${requestHost}`;
+          console.log(`[Generate] Development mode: Using request host for process-job: ${baseUrl}`);
+        } else {
+          baseUrl = 'http://localhost:3000';
+          console.log(`[Generate] Development mode: Using localhost for process-job`);
+        }
+      } else {
+        // In production, try multiple sources
+        let prodUrl = process.env.NEXT_PUBLIC_APP_URL;
+        
+        // Check if it's a placeholder
+        if (!prodUrl || prodUrl.includes('your-cloud-run-url') || prodUrl.includes('placeholder') || prodUrl.includes('example.com')) {
+          // Try VERCEL_URL
+          if (process.env.VERCEL_URL) {
+            prodUrl = `https://${process.env.VERCEL_URL}`;
+          }
+          // Try request host
+          else if (requestHost) {
+            prodUrl = `${requestProtocol}://${requestHost}`;
+          }
+          // Fallback to localhost (shouldn't happen in production)
+          else {
+            prodUrl = 'http://localhost:3000';
+            console.warn(`[Generate] No valid production URL found, using localhost`);
+          }
+        } else {
+          // Make sure it has protocol
+          if (!prodUrl.startsWith('http')) {
+            prodUrl = `https://${prodUrl}`;
+          }
+        }
+        
+        baseUrl = prodUrl;
+      }
+      
+      const url = `${baseUrl}/api/process-job/${caseId}`;
+      console.log(`[Generate] Triggering process-job at: ${url}`);
+      
+      // Trigger in background without blocking
+      (async () => {
+        // Add a small delay to ensure database transaction is committed
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        try {
+          await retryWithBackoff(
+            async () => {
+              // Use longer timeout in development since server-side fetch can be slower
+              const timeoutMs = isDevelopment ? 60000 : 30000; // 60s dev, 30s prod
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+              
+              try {
+                console.log(`[Generate] Calling process-job: ${url} (timeout: ${timeoutMs}ms)`);
+                
+                const response = await fetch(url, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  signal: controller.signal,
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                  const errorText = await response.text().catch(() => 'Unknown error');
+                  const error = new Error(`process-job returned ${response.status}: ${errorText}`);
+                  (error as any).status = response.status;
+                  throw error;
+                }
+                
+                const result = await response.json().catch(() => ({}));
+                console.log(`[Generate] ✅ process-job triggered successfully for case ${caseId}`, result);
+                return result;
+              } catch (fetchErr: any) {
+                clearTimeout(timeoutId);
+                throw fetchErr;
+              }
+            },
+            {
+              maxRetries: 3,
+              initialDelay: 2000, // 2 seconds
+              maxDelay: 10000, // 10 seconds
+            }
+          );
+        } catch (err: any) {
+          // All retries failed - log the error
+          logError('process-job fetch', err, { caseId, url });
+          console.error(`[Generate] ❌ Failed to trigger process-job after retries for case ${caseId}`);
+          console.error(`[Generate] URL attempted: ${url}`);
+          console.error(`[Generate] Error: ${err?.message || err}`);
+          
+          // Update case status to indicate processing failed to start
+          if (supabase) {
+            try {
+              await supabase
+                .from('petition_cases')
+                .update({
+                  status: 'failed',
+                  error_message: `Failed to start processing: ${err?.message || 'Unknown error'}`,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('case_id', caseId);
+            } catch (updateErr) {
+              logError('Database - update failed status after fetch error', updateErr, { caseId });
+            }
+          }
+          
+          // If it's a fetch error in development, provide helpful message
+          if (isDevelopment) {
+            const isAbortError = err?.message?.includes('aborted') || err?.code === 20 || err?.code === '20';
+            const isFetchError = err?.message?.includes('fetch failed');
+            
+            if (isAbortError || isFetchError) {
+              console.error(`[Generate] ⚠️  Development mode: Server-side fetch failed`);
+              console.error(`[Generate] ⚠️  This is common in Next.js when routes fetch to themselves.`);
+              console.error(`[Generate] ⚠️  Solutions:`);
+              console.error(`[Generate] ⚠️  1. Use Inngest dev server: npx inngest-cli dev`);
+              console.error(`[Generate] ⚠️  2. Or manually trigger: POST ${url}`);
+              console.error(`[Generate] ⚠️  3. The job may still process if you manually call the endpoint`);
+            }
+          }
+        }
+      })();
 
       return NextResponse.json({
         success: true,
         caseId,
-        message: 'Case created. Inngest unavailable - use process endpoint.',
+        message: 'Document generation started! This will take 15-30 minutes.',
         progressEndpoint: `/api/progress/${caseId}`,
-        processEndpoint: `/api/process-job/${caseId}`,
-        status: 'ready',
-        fallback: true,
+        status: 'processing',
+        estimatedTime: '15-30 minutes',
+        mode: 'direct', // Indicates not using Inngest
       });
     }
 

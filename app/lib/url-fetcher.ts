@@ -88,8 +88,9 @@ export async function fetchUrl(url: string): Promise<FetchedUrlData> {
 }
 
 export async function fetchMultipleUrls(urls: string[]): Promise<FetchedUrlData[]> {
+  // Filter out undefined, null, and empty values, then filter out empty strings
   const fetchPromises = urls
-    .filter((url) => url.trim().length > 0)
+    .filter((url) => url && typeof url === 'string' && url.trim().length > 0)
     .map((url) => fetchUrl(url.trim()));
 
   return Promise.all(fetchPromises);

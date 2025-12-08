@@ -40,7 +40,14 @@ export async function GET(
           .eq('case_id', caseId)
           .single();
 
-        if (!caseError && caseData) {
+        if (caseError) {
+          // Log the specific error
+          console.log(`[Progress] Database query error for ${caseId}:`, caseError.code, caseError.message);
+          // Continue to check in-memory
+        } else if (caseData) {
+          // Case found in database - return it
+          console.log(`[Progress] Found case ${caseId} in database: status=${caseData.status}, progress=${caseData.progress_percentage}%`);
+
           // If completed, get documents from database
           let documents = null;
           if (caseData.status === 'completed') {
@@ -50,28 +57,28 @@ export async function GET(
               .eq('case_id', caseId)
               .order('document_number');
 
-            documents = docsData;
+            documents = docsData || null;
           }
 
           return NextResponse.json({
             success: true,
             caseId,
-            status: caseData.status,
-            progress: caseData.progress_percentage || 0,
+            status: caseData.status || 'initializing',
+            progress: caseData.progress_percentage ?? 0,
             currentStage: caseData.current_stage || 'Processing',
-            currentMessage: caseData.current_message || '',
-            errorMessage: caseData.error_message,
+            currentMessage: caseData.current_message || 'Initializing...',
+            errorMessage: caseData.error_message || null,
             createdAt: caseData.created_at,
-            completedAt: caseData.completed_at,
+            completedAt: caseData.completed_at || null,
             documents,
             source: 'database',
           });
+        } else {
+          // No case data returned (shouldn't happen with single(), but handle it)
+          console.log(`[Progress] Case ${caseId} query returned no data`);
         }
-
-        // Database error or case not found - fall through to in-memory
-        console.log(`[Progress] Case ${caseId} not found in database, checking in-memory store`);
-      } catch (dbError) {
-        console.warn(`[Progress] Database error for ${caseId}:`, dbError);
+      } catch (dbError: any) {
+        console.warn(`[Progress] Database exception for ${caseId}:`, dbError?.message || dbError);
         // Fall through to in-memory store
       }
     }

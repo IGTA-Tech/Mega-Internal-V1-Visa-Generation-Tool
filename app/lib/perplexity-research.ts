@@ -134,7 +134,23 @@ Provide a complete title analysis following the BENEFICIARY_TITLE_RESEARCH_GUIDE
     // Try to parse JSON from the response
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(jsonMatch[0]);
+      // Ensure all required fields exist with defaults
+      const fieldOfWork = beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.fieldOfProfession || beneficiaryInfo.profession || 'Professional Field';
+      return {
+        title: parsed.title || beneficiaryInfo.jobTitle || beneficiaryInfo.occupation || 'Professional',
+        level_descriptor: parsed.level_descriptor || 'professional',
+        domain: parsed.domain || fieldOfWork,
+        role: parsed.role || 'professional',
+        specialization: parsed.specialization || 'general',
+        scope_type: parsed.scope_type || 'RESTRICTING',
+        evidence_boundaries: parsed.evidence_boundaries || 'Focus on achievements directly related to the stated field',
+        primary_criteria: Array.isArray(parsed.primary_criteria) ? parsed.primary_criteria : ['Awards', 'Published Material', 'Critical Role'],
+        secondary_criteria: Array.isArray(parsed.secondary_criteria) ? parsed.secondary_criteria : ['Membership', 'Original Contributions'],
+        weak_criteria: Array.isArray(parsed.weak_criteria) ? parsed.weak_criteria : ['Judging', 'Scholarly Articles'],
+        research_strategy: parsed.research_strategy || 'Competitor/Performer',
+        evidence_threshold: parsed.evidence_threshold || 'Demonstrated excellence in the field with quantifiable achievements'
+      };
     }
 
     // If no JSON found, create a default analysis
@@ -183,9 +199,9 @@ CRITICAL INSTRUCTIONS:
 - For each source found, provide: URL, title, source name, tier, criteria it supports, key content
 
 Title Analysis Context:
-- Scope: ${titleAnalysis.scope_type}
-- Primary Criteria: ${titleAnalysis.primary_criteria.join(', ')}
-- Research Strategy: ${titleAnalysis.research_strategy}
+- Scope: ${titleAnalysis.scope_type || 'Not specified'}
+- Primary Criteria: ${(titleAnalysis.primary_criteria || []).join(', ') || 'Not specified'}
+- Research Strategy: ${titleAnalysis.research_strategy || 'Not specified'}
 
 Return results as a JSON array of sources.`;
 
@@ -228,13 +244,37 @@ Focus on NEW sources not in the list above.`;
     const content = response.data.choices[0].message.content;
     const usage = response.data.usage;
 
-    // Try to parse JSON array from response
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
     let sources: DiscoveredSource[] = [];
 
-    if (jsonMatch) {
-      sources = JSON.parse(jsonMatch[0]);
+    // Try multiple strategies to extract JSON
+    try {
+      // Strategy 1: Try to find JSON array in response
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        sources = JSON.parse(jsonMatch[0]);
+      } else {
+        // Strategy 2: Try to find JSON object and extract sources array
+        const objectMatch = content.match(/\{[\s\S]*\}/);
+        if (objectMatch) {
+          const parsed = JSON.parse(objectMatch[0]);
+          // If it's an array-like structure, use it; otherwise look for sources property
+          sources = Array.isArray(parsed) ? parsed : (parsed.sources || []);
+        }
+      }
+    } catch (parseError: any) {
+      console.warn('[Perplexity Phase 1] JSON parse error:', parseError.message);
+      console.warn('[Perplexity Phase 1] Response content preview:', content.substring(0, 500));
+      // Return empty sources array on parse error
+      sources = [];
     }
+
+    // Ensure sources is an array
+    if (!Array.isArray(sources)) {
+      sources = [];
+    }
+
+    // Filter out invalid sources (missing url)
+    sources = sources.filter((s: any) => s && s.url && typeof s.url === 'string' && s.url.trim().length > 0);
 
     return {
       sources,
@@ -282,7 +322,7 @@ Return results as JSON array.`;
 **Name:** ${beneficiaryInfo.fullName}
 **Title:** ${titleAnalysis.title}
 **Field:** ${titleAnalysis.domain}
-**Primary Criteria to Focus:** ${titleAnalysis.primary_criteria.join(', ')}
+**Primary Criteria to Focus:** ${(titleAnalysis.primary_criteria || []).join(', ') || 'Not specified'}
 
 Find 10-15 sources targeting these specific criteria. Focus on field-specific databases and authoritative sources.
 
@@ -393,12 +433,37 @@ Already found ${existingSources.length} sources. Find NEW media coverage.`;
     const content = response.data.choices[0].message.content;
     const usage = response.data.usage;
 
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
     let sources: DiscoveredSource[] = [];
 
-    if (jsonMatch) {
-      sources = JSON.parse(jsonMatch[0]);
+    // Try multiple strategies to extract JSON
+    try {
+      // Strategy 1: Try to find JSON array in response
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        sources = JSON.parse(jsonMatch[0]);
+      } else {
+        // Strategy 2: Try to find JSON object and extract sources array
+        const objectMatch = content.match(/\{[\s\S]*\}/);
+        if (objectMatch) {
+          const parsed = JSON.parse(objectMatch[0]);
+          // If it's an array-like structure, use it; otherwise look for sources property
+          sources = Array.isArray(parsed) ? parsed : (parsed.sources || []);
+        }
+      }
+    } catch (parseError: any) {
+      console.warn('[Perplexity Phase 3] JSON parse error:', parseError.message);
+      console.warn('[Perplexity Phase 3] Response content preview:', content.substring(0, 500));
+      // Return empty sources array on parse error
+      sources = [];
     }
+
+    // Ensure sources is an array
+    if (!Array.isArray(sources)) {
+      sources = [];
+    }
+
+    // Filter out invalid sources (missing url)
+    sources = sources.filter((s: any) => s && s.url && typeof s.url === 'string' && s.url.trim().length > 0);
 
     return {
       sources,
@@ -429,7 +494,35 @@ export async function conductPerplexityResearch(
       progressCallback('Perplexity Research', 5, 'Analyzing beneficiary title...');
     }
 
-    const titleAnalysis = await analyzeBeneficiaryTitle(beneficiaryInfo);
+    let titleAnalysis: TitleAnalysis;
+    try {
+      titleAnalysis = await analyzeBeneficiaryTitle(beneficiaryInfo);
+      // Ensure all required fields exist
+      if (!titleAnalysis.primary_criteria || !Array.isArray(titleAnalysis.primary_criteria)) {
+        console.warn('[Perplexity] Title analysis returned incomplete data, using defaults');
+        titleAnalysis.primary_criteria = titleAnalysis.primary_criteria || ['Awards', 'Published Material', 'Critical Role'];
+        titleAnalysis.secondary_criteria = titleAnalysis.secondary_criteria || ['Membership', 'Original Contributions'];
+        titleAnalysis.weak_criteria = titleAnalysis.weak_criteria || ['Judging', 'Scholarly Articles'];
+      }
+    } catch (error: any) {
+      console.error('[Perplexity] Title analysis failed, using default analysis:', error.message);
+      // Create a default title analysis
+      const fieldOfWork = beneficiaryInfo.fieldOfExpertise || beneficiaryInfo.fieldOfProfession || beneficiaryInfo.profession || 'Professional Field';
+      titleAnalysis = {
+        title: beneficiaryInfo.jobTitle || beneficiaryInfo.occupation || 'Professional',
+        level_descriptor: 'professional',
+        domain: fieldOfWork,
+        role: 'professional',
+        specialization: 'general',
+        scope_type: 'RESTRICTING',
+        evidence_boundaries: 'Focus on achievements directly related to the stated field',
+        primary_criteria: ['Awards', 'Published Material', 'Critical Role'],
+        secondary_criteria: ['Membership', 'Original Contributions'],
+        weak_criteria: ['Judging', 'Scholarly Articles'],
+        research_strategy: 'Competitor/Performer',
+        evidence_threshold: 'Demonstrated excellence in the field with quantifiable achievements'
+      };
+    }
 
     // Phase 1: Identity & Primary Achievements
     if (progressCallback) {
@@ -487,7 +580,7 @@ export async function conductPerplexityResearch(
 Criteria Coverage: ${criteriaCoverage.join(', ')}
 
 Title Analysis: ${titleAnalysis.scope_type} scope, ${titleAnalysis.research_strategy} strategy
-Primary Focus: ${titleAnalysis.primary_criteria.join(', ')}`;
+Primary Focus: ${(titleAnalysis.primary_criteria || []).join(', ') || 'Not specified'}`;
 
     if (progressCallback) {
       progressCallback('Perplexity Research', 20, `Discovered ${discoveredSources.length} new sources across 3 research phases`);

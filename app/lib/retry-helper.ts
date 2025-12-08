@@ -32,6 +32,11 @@ const DEFAULT_RETRY_OPTIONS: Required<RetryOptions> = {
     'Connection error',
     'Network error',
     'timeout',
+    'aborted',
+    'AbortError',
+    '20', // AbortError code
+    'fetch failed',
+    'ECONNREFUSED',
     'rate_limit',
     'overloaded',
     '429',
@@ -69,10 +74,10 @@ export async function retryWithBackoff<T>(
     } catch (error: any) {
       lastError = error;
 
-      // Check if error is retryable
-      const errorMessage = error.message || error.toString();
-      const errorCode = error.code || '';
-      const statusCode = error.status?.toString() || '';
+      // Check if error is retryable - ensure all values are strings
+      const errorMessage = String(error?.message || error?.toString() || 'Unknown error');
+      const errorCode = String(error?.code || '');
+      const statusCode = String(error?.status || '');
 
       const isRetryable = config.retryableErrors.some(
         retryableError =>
@@ -321,9 +326,9 @@ export function sleep(ms: number): Promise<void> {
  * Check if an error is retryable
  */
 export function isRetryableError(error: any): boolean {
-  const errorMessage = error.message || error.toString();
-  const errorCode = error.code || '';
-  const statusCode = error.status?.toString() || '';
+  const errorMessage = String(error?.message || error?.toString() || 'Unknown error');
+  const errorCode = String(error?.code || '');
+  const statusCode = String(error?.status || '');
 
   return DEFAULT_RETRY_OPTIONS.retryableErrors.some(
     retryableError =>
@@ -418,6 +423,7 @@ export function createSafeProgressCallback(
 ): ProgressCallback {
   return (stage: string, progress: number, message: string) => {
     try {
+      console.log('createSafeProgressCallback===========', stage, progress, message);
       if (callback) {
         callback(stage, progress, message);
       }

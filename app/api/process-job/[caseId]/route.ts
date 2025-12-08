@@ -17,9 +17,11 @@ export async function POST(
   const { caseId } = params;
   let supabase: any = null;
 
+  console.log(`[ProcessJob] ⚡ Endpoint called for case ${caseId}`);
+  
   try {
     supabase = getSupabaseClient();
-    console.log(`[ProcessJob] Starting job for case ${caseId}`);
+    console.log(`[ProcessJob] ✅ Starting job for case ${caseId}`);
 
     // Get case from database
     const { data: caseData, error: caseError } = await supabase
@@ -122,7 +124,11 @@ export async function POST(
     console.log(`[ProcessJob] Generating documents for ${caseId}`);
     const result = await generateAllDocuments(beneficiaryInfo, safeProgress);
 
-    // Store generated documents
+    // Update progress
+    await updateProgress('Saving Documents', 95, 'Saving generated markdown documents...');
+
+    // Step 1: Upload markdown files to Supabase storage
+    const documentUrls: string[] = [];
     const documents = [
       { number: 1, name: 'Comprehensive Analysis', type: 'analysis', content: result.document1 },
       { number: 2, name: 'Publication Analysis', type: 'analysis', content: result.document2 },
@@ -134,10 +140,59 @@ export async function POST(
       { number: 8, name: 'Exhibit Assembly Guide', type: 'guide', content: result.document8 },
     ];
 
-    let savedCount = 0;
-    for (const doc of documents) {
+    // Upload markdown files to storage
+    for (let i = 0; i < documents.length; i++) {
+      const doc = documents[i];
       try {
-        // Upsert to handle retries
+        const fileName = `document-${doc.number}-${doc.name.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.md`;
+        const storagePath = `petitions/${caseId}/${fileName}`;
+        
+        console.log(`[ProcessJob] Uploading markdown file ${doc.number} (${fileName})...`);
+        
+        // Convert markdown content to Buffer for storage
+        const markdownBuffer = Buffer.from(doc.content || '', 'utf-8');
+        
+        const { error: uploadError } = await supabase.storage
+          .from('petition-documents')
+          .upload(storagePath, markdownBuffer, {
+            contentType: 'text/markdown',
+            upsert: true,
+          });
+
+        if (!uploadError) {
+          const { data: urlData } = supabase.storage
+            .from('petition-documents')
+            .getPublicUrl(storagePath);
+          documentUrls.push(urlData.publicUrl);
+          console.log(`[ProcessJob] ✅ Successfully uploaded markdown file ${doc.number} to: ${urlData.publicUrl}`);
+        } else {
+          console.error(`[ProcessJob] ❌ Failed to upload markdown file ${doc.number}:`, uploadError);
+          documentUrls.push(''); // Empty string for failed uploads
+        }
+      } catch (uploadErr: any) {
+        console.error(`[ProcessJob] ❌ Exception uploading markdown file ${doc.number}:`, uploadErr?.message || uploadErr);
+        logError(`Upload markdown file ${doc.number}`, uploadErr, { caseId, docName: doc.name });
+        documentUrls.push(''); // Empty string for failed uploads
+      }
+    }
+
+    // Step 2: Store generated documents (markdown content and URLs) to database
+    let savedCount = 0;
+    for (let i = 0; i < documents.length; i++) {
+      const doc = documents[i];
+      const documentUrl = documentUrls[i] || '';
+      
+      // Construct storage path - use markdown file path
+      let storagePath = `generated/${caseId}/document-${doc.number}.md`;
+      if (documentUrl) {
+        // Extract the storage path from the public URL
+        const urlParts = documentUrl.split('/');
+        const fileName = urlParts[urlParts.length - 1];
+        storagePath = `petitions/${caseId}/${fileName}`;
+      }
+
+      try {
+        // Save document with markdown URL
         const { error } = await supabase
           .from('generated_documents')
           .upsert({
@@ -145,14 +200,23 @@ export async function POST(
             document_number: doc.number,
             document_name: doc.name,
             document_type: doc.type,
-            content: doc.content,
+            content: doc.content, // Markdown content
             word_count: doc.content?.split(/\s+/).length || 0,
             page_estimate: Math.ceil((doc.content?.split(/\s+/).length || 0) / 500),
-            storage_url: `generated/${caseId}/document-${doc.number}.md`,
+            storage_path: storagePath,
+            storage_url: documentUrl || `generated/${caseId}/document-${doc.number}.md`, // Markdown file URL
+            file_size_bytes: Buffer.from(doc.content || '', 'utf-8').length,
             generated_at: new Date().toISOString(),
           }, {
             onConflict: 'case_id,document_number',
           });
+
+        if (!error) {
+          console.log(`[ProcessJob] ✅ Saved document ${doc.number} (${doc.name}) with markdown URL: ${documentUrl || 'N/A'}`);
+          savedCount++;
+        } else {
+          console.error(`[ProcessJob] ❌ Database error saving document ${doc.number}:`, error);
+        }
 
         if (!error) savedCount++;
       } catch (docError) {
@@ -160,7 +224,7 @@ export async function POST(
       }
     }
 
-    console.log(`[ProcessJob] ✅ Completed case ${caseId} - saved ${savedCount}/${documents.length} documents`);
+    console.log(`[ProcessJob] ✅ Completed case ${caseId} - saved ${savedCount}/${documents.length} markdown documents`);
 
     return NextResponse.json({
       success: true,

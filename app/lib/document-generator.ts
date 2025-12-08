@@ -258,7 +258,7 @@ export async function generateAllDocuments(
 ): Promise<GenerationResult> {
   // Create safe progress callback that never throws
   const safeProgress = createSafeProgressCallback(onProgress);
-
+  console.log('generateAllDocuments===========', beneficiaryInfo);
   try {
     // Stage 1: Read Knowledge Base (5%)
     safeProgress('Reading Knowledge Base', 5, 'Loading visa petition knowledge base files...');
@@ -286,12 +286,15 @@ export async function generateAllDocuments(
       try {
         perplexityResearch = await conductPerplexityResearch(beneficiaryInfo, safeProgress);
 
-        // Add discovered URLs to the list
-        const discoveredUrls = perplexityResearch.discoveredSources.map(s => s.url);
+        // Add discovered URLs to the list (filter out undefined/null URLs)
+        const discoveredUrls = perplexityResearch.discoveredSources
+          .map(s => s?.url)
+          .filter((url): url is string => typeof url === 'string' && url.trim().length > 0);
         allUrls = [...allUrls, ...discoveredUrls];
 
-        // Deduplicate URLs
-        allUrls = Array.from(new Set(allUrls));
+        // Deduplicate URLs and filter out any invalid ones
+        allUrls = Array.from(new Set(allUrls))
+          .filter((url): url is string => typeof url === 'string' && url.trim().length > 0);
 
         safeProgress(
           'Perplexity Research',

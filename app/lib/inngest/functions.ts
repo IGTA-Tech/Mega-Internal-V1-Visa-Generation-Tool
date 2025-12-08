@@ -52,23 +52,16 @@ export const generatePetitionFunction = inngest.createFunction(
       console.log('[Inngest] Running without Supabase - using in-memory progress');
     }
 
-    // Helper to update progress in BOTH in-memory store and database
+    // Helper to update progress in BOTH database and in-memory store
+    // PRIORITY: Database first (for real-time updates), then in-memory (for fallback)
     const updateProgress = async (stage: string, percentage: number, message: string) => {
-      // Always update in-memory store
-      setProgress(caseId, {
-        status: percentage === 100 ? 'completed' : 'generating',
-        progress: percentage,
-        currentStage: stage,
-        currentMessage: message,
-      });
-
-      // Also update database if available
+      // Update database FIRST (this is what the frontend polls)
       if (supabase) {
         try {
           await supabase
             .from('petition_cases')
             .update({
-              status: percentage === 100 ? 'completed' : 'generating',
+              status: percentage === 100 ? 'completed' : percentage === 0 ? 'initializing' : 'generating',
               progress_percentage: percentage,
               current_stage: stage,
               current_message: message,
@@ -79,6 +72,18 @@ export const generatePetitionFunction = inngest.createFunction(
         } catch (error) {
           logError('Inngest updateProgress DB', error, { caseId, stage, percentage });
         }
+      }
+
+      // Also update in-memory store (for fallback if database fails)
+      try {
+        setProgress(caseId, {
+          status: percentage === 100 ? 'completed' : 'generating',
+          progress: percentage,
+          currentStage: stage,
+          currentMessage: message,
+        });
+      } catch (error) {
+        logError('Inngest updateProgress memory', error, { caseId, stage, percentage });
       }
     };
 
@@ -148,14 +153,10 @@ export const generatePetitionFunction = inngest.createFunction(
       };
     });
 
-    // Step 4: Save documents to database
-    await step.run('save-documents', async () => {
-      if (!supabase) {
-        console.log('[Inngest] Skipping database save - Supabase not available');
-        return { saved: false };
-      }
-
-      console.log(`[Inngest] Saving documents for case ${caseId}...`);
+    // Step 4: Upload markdown files to storage
+    const documentResults = await step.run('upload-markdown-files', async () => {
+      console.log(`[Inngest] Uploading markdown files to storage for case ${caseId}...`);
+      await updateProgress('Saving Documents', 95, 'Uploading markdown files to storage...');
 
       const documents = [
         { number: 1, name: 'Comprehensive Analysis', type: 'analysis', content: result.document1 },
@@ -168,9 +169,67 @@ export const generatePetitionFunction = inngest.createFunction(
         { number: 8, name: 'Exhibit Assembly Guide', type: 'guide', content: result.document8 },
       ];
 
+      const documentUrls: string[] = [];
+
+      if (supabase) {
+        for (let i = 0; i < documents.length; i++) {
+          const doc = documents[i];
+          try {
+            const fileName = `document-${doc.number}-${doc.name.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.md`;
+            const storagePath = `petitions/${caseId}/${fileName}`;
+            
+            console.log(`[Inngest] Uploading markdown file ${doc.number} (${fileName})...`);
+            
+            // Convert markdown content to Buffer for storage
+            const markdownBuffer = Buffer.from(doc.content || '', 'utf-8');
+            
+            const { error: uploadError } = await supabase.storage
+              .from('petition-documents')
+              .upload(storagePath, markdownBuffer, {
+                contentType: 'text/markdown',
+                upsert: true,
+              });
+
+            if (!uploadError) {
+              const { data: urlData } = supabase.storage
+                .from('petition-documents')
+                .getPublicUrl(storagePath);
+              documentUrls.push(urlData.publicUrl);
+              console.log(`[Inngest] ✅ Uploaded markdown file ${doc.number} to: ${urlData.publicUrl}`);
+            } else {
+              console.error(`[Inngest] ❌ Failed to upload markdown file ${doc.number}:`, uploadError);
+              documentUrls.push(''); // Empty string for failed uploads
+            }
+          } catch (uploadErr) {
+            logError(`Upload markdown file ${doc.number}`, uploadErr, { caseId, docName: doc.name });
+            documentUrls.push(''); // Empty string for failed uploads
+          }
+        }
+      }
+
+      return { documents, documentUrls };
+    });
+
+    // Step 5: Save documents (markdown content and URLs) to database
+    await step.run('save-documents', async () => {
+      if (!supabase) {
+        console.log('[Inngest] Skipping database save - Supabase not available');
+        return { saved: false };
+      }
+
+      console.log(`[Inngest] Saving documents to database for case ${caseId}...`);
+
+      const documents = documentResults.documents;
+      const documentUrls = documentResults.documentUrls;
+
       let savedCount = 0;
-      for (const doc of documents) {
+      for (let i = 0; i < documents.length; i++) {
+        const doc = documents[i];
+        const documentUrl = documentUrls[i] || '';
+        const storagePath = documentUrl ? documentUrl.split('/').slice(-2).join('/') : `generated/${caseId}/document-${doc.number}.md`;
+
         try {
+          // Save document with markdown URL
           const { error } = await supabase
             .from('generated_documents')
             .upsert({
@@ -178,26 +237,33 @@ export const generatePetitionFunction = inngest.createFunction(
               document_number: doc.number,
               document_name: doc.name,
               document_type: doc.type,
-              content: doc.content,
+              content: doc.content, // Markdown content
               word_count: doc.content?.split(/\s+/).length || 0,
               page_estimate: Math.ceil((doc.content?.split(/\s+/).length || 0) / 500),
-              storage_url: `generated/${caseId}/document-${doc.number}.md`,
+              storage_path: storagePath,
+              storage_url: documentUrl || `generated/${caseId}/document-${doc.number}.md`, // Markdown file URL
+              file_size_bytes: Buffer.from(doc.content || '', 'utf-8').length,
               generated_at: new Date().toISOString(),
             }, {
               onConflict: 'case_id,document_number',
             });
 
-          if (!error) savedCount++;
+          if (!error) {
+            console.log(`[Inngest] ✅ Saved document ${doc.number} (${doc.name}) with markdown URL: ${documentUrl || 'N/A'}`);
+            savedCount++;
+          } else {
+            console.error(`[Inngest] ❌ Database error saving document ${doc.number}:`, error);
+          }
         } catch (docError) {
           logError(`Save document ${doc.number}`, docError, { caseId, docName: doc.name });
         }
       }
 
-      console.log(`[Inngest] Saved ${savedCount}/${documents.length} documents for case ${caseId}`);
+      console.log(`[Inngest] Saved ${savedCount}/${documents.length} markdown documents for case ${caseId}`);
       return { saved: true, count: savedCount };
     });
 
-    // Step 5: Mark as completed and store in-memory results
+    // Step 6: Mark as completed and store in-memory results
     await step.run('mark-completed', async () => {
       console.log(`[Inngest] Marking case ${caseId} as completed`);
 
@@ -233,7 +299,7 @@ export const generatePetitionFunction = inngest.createFunction(
       return { completed: true, documentCount: documents.length };
     });
 
-    // Step 6: Send email with documents (if email provided)
+    // Step 7: Send email with documents (if email provided)
     await step.run('send-email', async () => {
       if (!beneficiaryInfo.recipientEmail) {
         console.log(`[Inngest] No recipient email provided, skipping email send`);
