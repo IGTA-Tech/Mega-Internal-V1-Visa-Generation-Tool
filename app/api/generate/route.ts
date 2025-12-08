@@ -192,8 +192,7 @@ export async function POST(request: NextRequest) {
       });
 
       console.log(`[Generate] Inngest event sent successfully for case ${caseId}`);
-      useInngest = true;
-
+      
       // Update status in both in-memory store and database
       setProgress(caseId, {
         status: 'researching',
@@ -213,6 +212,136 @@ export async function POST(request: NextRequest) {
           })
           .eq('case_id', caseId);
       }
+
+      // SAFETY FALLBACK: If Inngest function doesn't start processing within 30 seconds,
+      // automatically fall back to direct processing. This handles cases where:
+      // - Inngest service isn't properly configured
+      // - Webhook endpoint isn't accessible
+      // - Inngest can't reach the server
+      // Capture values before async function
+      const fallbackCaseId = caseId;
+      const fallbackRequestHost = request.headers.get('host');
+      const fallbackRequestProtocol = request.headers.get('x-forwarded-proto') || 
+                                     (request.url.startsWith('https') ? 'https' : 'http');
+      const fallbackIsDevelopment = isDevelopment;
+      
+      (async () => {
+        await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+        
+        // Check if progress has advanced beyond 5%
+        const checkSupabase = getOptionalSupabase();
+        if (checkSupabase) {
+          const { data: checkData } = await checkSupabase
+            .from('petition_cases')
+            .select('progress_percentage, status')
+            .eq('case_id', fallbackCaseId)
+            .single();
+          
+          // If still at 5% or less, Inngest isn't working - fall back to direct processing
+          if (checkData && checkData.progress_percentage <= 5 && checkData.status === 'researching') {
+            console.warn(`[Generate] ⚠️ Inngest fallback triggered for ${fallbackCaseId} - progress still at ${checkData.progress_percentage}% after 30s`);
+            console.log(`[Generate] Falling back to direct processing for case ${fallbackCaseId}`);
+            
+            // Use same URL detection logic as main direct processing path
+            let baseUrl: string;
+            
+            if (fallbackIsDevelopment) {
+              // In development, always use HTTP with localhost
+              baseUrl = 'http://localhost:3000';
+              console.log(`[Generate] Fallback: Development mode - using localhost`);
+            } else {
+              // In production, try multiple sources
+              let prodUrl = process.env.NEXT_PUBLIC_APP_URL;
+              
+              // Check if it's a placeholder
+              if (!prodUrl || prodUrl.includes('your-cloud-run-url') || prodUrl.includes('placeholder') || prodUrl.includes('example.com')) {
+                // Try VERCEL_URL
+                if (process.env.VERCEL_URL) {
+                  prodUrl = `https://${process.env.VERCEL_URL}`;
+                }
+                // Try request host - but check if it's localhost first
+                else if (fallbackRequestHost) {
+                  // CRITICAL: Always use HTTP for localhost, even if request came via HTTPS
+                  // Check multiple localhost patterns
+                  const isLocalhost = fallbackRequestHost.includes('localhost') || 
+                                     fallbackRequestHost.startsWith('127.0.0.1') ||
+                                     fallbackRequestHost === 'localhost:3000' ||
+                                     fallbackRequestHost.startsWith('localhost:');
+                  
+                  if (isLocalhost) {
+                    prodUrl = `http://${fallbackRequestHost}`;
+                    console.log(`[Generate] Fallback: Detected localhost host "${fallbackRequestHost}", forcing HTTP`);
+                  } else {
+                    // Use HTTPS for production (non-localhost) hosts
+                    prodUrl = `https://${fallbackRequestHost}`;
+                    console.log(`[Generate] Fallback: Using production host "${fallbackRequestHost}" with HTTPS`);
+                  }
+                }
+                // Fallback to localhost with HTTP
+                else {
+                  prodUrl = 'http://localhost:3000';
+                  console.warn(`[Generate] Fallback: No valid production URL found, using localhost`);
+                }
+              } else {
+                // Make sure it has protocol
+                if (!prodUrl.startsWith('http')) {
+                  // Don't use HTTPS for localhost
+                  if (prodUrl.includes('localhost') || prodUrl.includes('127.0.0.1')) {
+                    prodUrl = `http://${prodUrl}`;
+                  } else {
+                    prodUrl = `https://${prodUrl}`;
+                  }
+                }
+                // Force HTTP for localhost even if URL has https
+                if (prodUrl.includes('localhost') || prodUrl.includes('127.0.0.1')) {
+                  prodUrl = prodUrl.replace('https://', 'http://');
+                }
+              }
+              
+              baseUrl = prodUrl;
+            }
+            
+            // Final safety check: force HTTP for any localhost URL
+            if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) {
+              baseUrl = baseUrl.replace('https://', 'http://');
+              console.log(`[Generate] Fallback: Final safety check - forced HTTP for localhost: ${baseUrl}`);
+            }
+            
+            const url = `${baseUrl}/api/process-job/${fallbackCaseId}`;
+            console.log(`[Generate] Triggering fallback process-job at: ${url}`);
+            
+            // Use retry logic for fallback fetch
+            try {
+              await retryWithBackoff(
+                async () => {
+                  const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                  });
+                  
+                  if (!response.ok) {
+                    const errorText = await response.text().catch(() => 'Unknown error');
+                    throw new Error(`process-job returned ${response.status}: ${errorText}`);
+                  }
+                  
+                  return await response.json().catch(() => ({}));
+                },
+                {
+                  maxRetries: 2,
+                  initialDelay: 2000,
+                  maxDelay: 5000,
+                }
+              );
+              console.log(`[Generate] ✅ Fallback process-job triggered successfully for case ${fallbackCaseId}`);
+            } catch (err: any) {
+              console.error(`[Generate] ❌ Fallback process-job failed after retries:`, err?.message || err);
+              logError('Fallback process-job', err, { caseId: fallbackCaseId, url });
+            }
+          }
+        }
+      })();
+      
+      useInngest = true;
       } catch (inngestError: any) {
         logError('Inngest - send event', inngestError, { caseId });
         console.warn('[Generate] Inngest send failed - will use direct processing');
