@@ -773,9 +773,8 @@ export default function PetitionGeneratorForm() {
     setCurrentMessage('Creating case and starting background job...');
 
     try {
-      // Call the generate API - this now triggers Inngest automatically
-      // Inngest handles the long-running document generation in the background
-      // with NO timeout limits (can run for 15-30+ minutes)
+      // Call the generate API - triggers direct processing
+      // Document generation runs in the background and can take 15-30+ minutes
       const createResponse = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -792,19 +791,7 @@ export default function PetitionGeneratorForm() {
       const newCaseId = createData.caseId;
       setCaseId(newCaseId);
 
-      // Check if we need to fall back to the old process-job approach
-      if (createData.fallback) {
-        setCurrentMessage('Starting document generation (fallback mode)...');
-        // Only call process-job if Inngest failed
-        fetch(`/api/process-job/${newCaseId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        }).catch(err => {
-          console.warn('Process job request error:', err);
-        });
-      } else {
-        setCurrentMessage('Document generation started in background. This will take 15-30 minutes...');
-      }
+      setCurrentMessage('Document generation started in background. This will take 15-30 minutes...');
 
       // Start polling for progress updates from the database
       pollProgress(newCaseId);
