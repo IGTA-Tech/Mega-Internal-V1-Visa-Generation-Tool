@@ -164,51 +164,33 @@ export async function POST(request: NextRequest) {
     }
 
     // Trigger process-job endpoint in background (fire-and-forget)
-    // Try to get the actual URL from request, environment, or use localhost
+    // Determine base URL for the process-job endpoint
     let baseUrl: string;
     
-    // Get the host from the request if available
-    const requestHost = request.headers.get('host');
-    const requestProtocol = request.headers.get('x-forwarded-proto') || 
-                           (request.url.startsWith('https') ? 'https' : 'http');
-    
     if (isDevelopment) {
-      // In development, try to use the request host first, then fallback to localhost
-      // This helps avoid issues with server-side fetch to localhost
-      if (requestHost) {
-        baseUrl = `http://${requestHost}`;
-        console.log(`[Generate] Development mode: Using request host for process-job: ${baseUrl}`);
-      } else {
-        baseUrl = 'http://localhost:3000';
-        console.log(`[Generate] Development mode: Using localhost for process-job`);
-      }
+      // Development: always use localhost
+      baseUrl = 'http://localhost:3000';
+      console.log(`[Generate] Development mode: Using localhost for process-job`);
     } else {
-      // In production, try multiple sources
-      let prodUrl = process.env.NEXT_PUBLIC_APP_URL;
+      // Production: use NEXT_PUBLIC_APP_URL from environment
+      const prodUrl = process.env.NEXT_PUBLIC_APP_URL;
       
-      // Check if it's a placeholder
-      if (!prodUrl || prodUrl.includes('your-cloud-run-url') || prodUrl.includes('placeholder') || prodUrl.includes('example.com')) {
-        // Try VERCEL_URL
-        if (process.env.VERCEL_URL) {
-          prodUrl = `https://${process.env.VERCEL_URL}`;
-        }
-        // Try request host
-        else if (requestHost) {
-          prodUrl = `${requestProtocol}://${requestHost}`;
-        }
-        // Fallback to localhost (shouldn't happen in production)
-        else {
-          prodUrl = 'http://localhost:3000';
-          console.warn(`[Generate] No valid production URL found, using localhost`);
+      if (!prodUrl) {
+        // Fallback to request host if NEXT_PUBLIC_APP_URL is not set
+        const requestHost = request.headers.get('host');
+        if (requestHost) {
+          const requestProtocol = request.headers.get('x-forwarded-proto') || 'https';
+          baseUrl = `${requestProtocol}://${requestHost}`;
+          console.warn(`[Generate] ⚠️  NEXT_PUBLIC_APP_URL not set, using request host: ${baseUrl}`);
+        } else {
+          baseUrl = 'http://localhost:3000';
+          console.error(`[Generate] ❌ NEXT_PUBLIC_APP_URL not set and no request host available, using localhost`);
         }
       } else {
-        // Make sure it has protocol
-        if (!prodUrl.startsWith('http')) {
-          prodUrl = `https://${prodUrl}`;
-        }
+        // Ensure URL has protocol
+        baseUrl = prodUrl.startsWith('http') ? prodUrl : `https://${prodUrl}`;
+        console.log(`[Generate] Using NEXT_PUBLIC_APP_URL: ${baseUrl}`);
       }
-      
-      baseUrl = prodUrl;
     }
     
     const url = `${baseUrl}/api/process-job/${caseId}`;

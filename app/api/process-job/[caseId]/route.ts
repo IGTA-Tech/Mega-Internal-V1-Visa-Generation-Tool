@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/app/lib/supabase-server';
 import { generateAllDocuments } from '@/app/lib/document-generator';
 import { BeneficiaryInfo } from '@/app/types';
 import {
@@ -10,6 +9,31 @@ import {
 export const maxDuration = 300; // 5 minutes max for Vercel Pro
 export const dynamic = 'force-dynamic';
 
+// Try to get Supabase client - returns null if unavailable
+function getOptionalSupabase() {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('[ProcessJob] ❌ Supabase credentials missing:', {
+        hasUrl: !!supabaseUrl,
+        hasKey: !!supabaseKey,
+        envKeys: Object.keys(process.env).filter(k => k.includes('SUPABASE')),
+      });
+      return null;
+    }
+
+    const { createClient } = require('@supabase/supabase-js');
+    const client = createClient(supabaseUrl, supabaseKey);
+    console.log('[ProcessJob] ✅ Supabase client created successfully');
+    return client;
+  } catch (error: any) {
+    console.error('[ProcessJob] ❌ Failed to create Supabase client:', error?.message || error);
+    return null;
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: { caseId: string } }
@@ -19,8 +43,57 @@ export async function POST(
 
   console.log(`[ProcessJob] ⚡ Endpoint called for case ${caseId}`);
   
+  // Log environment info for debugging - more detailed
+  const allEnvKeys = Object.keys(process.env);
+  const supabaseKeys = allEnvKeys.filter(k => k.includes('SUPABASE'));
+  const envInfo = {
+    NODE_ENV: process.env.NODE_ENV,
+    PORT: process.env.PORT,
+    hasSupabaseUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+    hasSupabaseKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    supabaseUrlPrefix: process.env.NEXT_PUBLIC_SUPABASE_URL?.substring(0, 30) || 'not set',
+    supabaseKeyPrefix: process.env.SUPABASE_SERVICE_ROLE_KEY?.substring(0, 20) || 'not set',
+    allSupabaseKeys: supabaseKeys,
+    totalEnvVars: allEnvKeys.length,
+    sampleEnvKeys: allEnvKeys.slice(0, 20), // First 20 env keys for debugging
+  };
+  console.log(`[ProcessJob] Environment check:`, JSON.stringify(envInfo, null, 2));
+  
+  // Also log the actual values (truncated) to help debug
+  if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
+    console.log(`[ProcessJob] NEXT_PUBLIC_SUPABASE_URL is set: ${process.env.NEXT_PUBLIC_SUPABASE_URL.substring(0, 50)}...`);
+  } else {
+    console.error(`[ProcessJob] ❌ NEXT_PUBLIC_SUPABASE_URL is NOT set`);
+  }
+  
+  if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.log(`[ProcessJob] SUPABASE_SERVICE_ROLE_KEY is set: ${process.env.SUPABASE_SERVICE_ROLE_KEY.substring(0, 20)}...`);
+  } else {
+    console.error(`[ProcessJob] ❌ SUPABASE_SERVICE_ROLE_KEY is NOT set`);
+  }
+  
   try {
-    supabase = getSupabaseClient();
+    supabase = getOptionalSupabase();
+    
+    if (!supabase) {
+      const errorMsg = 'Supabase credentials are not configured. Please set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.';
+      console.error(`[ProcessJob] ❌ ${errorMsg}`);
+      console.error(`[ProcessJob] Environment details:`, envInfo);
+      return NextResponse.json(
+        {
+          error: errorMsg,
+          caseId,
+          details: 'Check Cloud Run environment variables configuration. Ensure secrets are properly mounted via --set-secrets.',
+          environmentCheck: {
+            hasUrl: envInfo.hasSupabaseUrl,
+            hasKey: envInfo.hasSupabaseKey,
+            availableKeys: envInfo.allSupabaseKeys,
+          },
+        },
+        { status: 500 }
+      );
+    }
+    
     console.log(`[ProcessJob] ✅ Starting job for case ${caseId}`);
 
     // Get case from database

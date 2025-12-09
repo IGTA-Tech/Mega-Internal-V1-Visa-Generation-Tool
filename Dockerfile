@@ -54,4 +54,8 @@ EXPOSE 3000
 ENV PORT 3000
 ENV HOSTNAME "0.0.0.0"
 
+# Note: Environment variables set via Cloud Run (--set-secrets or --set-env-vars)
+# will be available at runtime. NEXT_PUBLIC_* variables need to be available
+# at runtime for server-side code in standalone mode.
+
 CMD ["node", "server.js"]
