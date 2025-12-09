@@ -46,6 +46,17 @@ export async function POST(
   // Log environment info for debugging - more detailed
   const allEnvKeys = Object.keys(process.env);
   const supabaseKeys = allEnvKeys.filter(k => k.includes('SUPABASE'));
+  const publicKeys = allEnvKeys.filter(k => k.startsWith('NEXT_PUBLIC_'));
+  
+  // Check for common typos or variations
+  const possibleUrlKeys = [
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE',
+  ];
+  const foundUrlKey = possibleUrlKeys.find(key => process.env[key]);
+  
   const envInfo = {
     NODE_ENV: process.env.NODE_ENV,
     PORT: process.env.PORT,
@@ -54,23 +65,37 @@ export async function POST(
     supabaseUrlPrefix: process.env.NEXT_PUBLIC_SUPABASE_URL?.substring(0, 30) || 'not set',
     supabaseKeyPrefix: process.env.SUPABASE_SERVICE_ROLE_KEY?.substring(0, 20) || 'not set',
     allSupabaseKeys: supabaseKeys,
+    allPublicKeys: publicKeys,
+    foundUrlKey: foundUrlKey || 'none',
     totalEnvVars: allEnvKeys.length,
-    sampleEnvKeys: allEnvKeys.slice(0, 20), // First 20 env keys for debugging
+    // Show all env keys that might be related
+    relatedKeys: allEnvKeys.filter(k => 
+      k.includes('SUPABASE') || 
+      k.includes('DATABASE') || 
+      k.includes('URL')
+    ),
   };
   console.log(`[ProcessJob] Environment check:`, JSON.stringify(envInfo, null, 2));
   
   // Also log the actual values (truncated) to help debug
   if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
-    console.log(`[ProcessJob] NEXT_PUBLIC_SUPABASE_URL is set: ${process.env.NEXT_PUBLIC_SUPABASE_URL.substring(0, 50)}...`);
+    console.log(`[ProcessJob] ✅ NEXT_PUBLIC_SUPABASE_URL is set: ${process.env.NEXT_PUBLIC_SUPABASE_URL.substring(0, 50)}...`);
   } else {
     console.error(`[ProcessJob] ❌ NEXT_PUBLIC_SUPABASE_URL is NOT set`);
+    // Check if it exists with a different name
+    if (foundUrlKey && foundUrlKey !== 'NEXT_PUBLIC_SUPABASE_URL') {
+      console.error(`[ProcessJob] ⚠️  Found similar key: ${foundUrlKey} = ${process.env[foundUrlKey]?.substring(0, 50)}...`);
+    }
   }
   
   if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    console.log(`[ProcessJob] SUPABASE_SERVICE_ROLE_KEY is set: ${process.env.SUPABASE_SERVICE_ROLE_KEY.substring(0, 20)}...`);
+    console.log(`[ProcessJob] ✅ SUPABASE_SERVICE_ROLE_KEY is set: ${process.env.SUPABASE_SERVICE_ROLE_KEY.substring(0, 20)}...`);
   } else {
     console.error(`[ProcessJob] ❌ SUPABASE_SERVICE_ROLE_KEY is NOT set`);
   }
+  
+  // Log ALL environment variable names (to help spot typos)
+  console.log(`[ProcessJob] All environment variable names (${allEnvKeys.length} total):`, allEnvKeys.sort().join(', '));
   
   try {
     supabase = getOptionalSupabase();
