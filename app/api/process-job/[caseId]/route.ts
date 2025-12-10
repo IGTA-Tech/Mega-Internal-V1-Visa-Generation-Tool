@@ -5,6 +5,7 @@ import {
   logError,
   createSafeProgressCallback,
 } from '@/app/lib/retry-helper';
+import { sendDocumentsEmail } from '@/app/lib/email-service';
 
 export const maxDuration = 300; // 5 minutes max for Vercel Pro
 export const dynamic = 'force-dynamic';
@@ -192,6 +193,7 @@ export async function POST(
       petitionerName: caseData.petitioner_name,
       petitionerOrganization: caseData.petitioner_organization,
       additionalInfo: caseData.additional_info,
+      recipientEmail: caseData.recipient_email,
       primaryUrls: urlsData?.map((u: any) => u.url) || [],
       urls: urlsData || [],
       uploadedFiles: filesData || [],
@@ -329,23 +331,48 @@ export async function POST(
         } else {
           console.error(`[ProcessJob] ❌ Database error saving document ${doc.number}:`, error);
         }
-
-        if (!error) savedCount++;
       } catch (docError) {
         logError(`Save document ${doc.number}`, docError, { caseId, docName: doc.name });
       }
     }
 
+    // Step 3: Send documents via email if configured
+    let emailSent = false;
+    if (beneficiaryInfo.recipientEmail) {
+      if (process.env.SENDGRID_API_KEY) {
+        try {
+          console.log(`[ProcessJob] 📧 Sending documents email to ${beneficiaryInfo.recipientEmail}`);
+          const emailDocuments = documents.map((doc, idx) => ({
+            name: `Document ${doc.number} - ${doc.name}`,
+            content: doc.content || '',
+            pageCount: Math.ceil((doc.content?.split(/\s+/).length || 0) / 500),
+          }));
+
+          emailSent = await sendDocumentsEmail(beneficiaryInfo, emailDocuments);
+          console.log(`[ProcessJob] 📧 Email send result for ${beneficiaryInfo.recipientEmail}: ${emailSent ? 'sent' : 'failed'}`);
+        } catch (emailError) {
+          console.error(`[ProcessJob] ❌ Failed to send email to ${beneficiaryInfo.recipientEmail}:`, emailError);
+          logError('process-job send email', emailError, { caseId, email: beneficiaryInfo.recipientEmail });
+        }
+      } else {
+        console.warn('[ProcessJob] ⚠️ SENDGRID_API_KEY not set; skipping email send');
+      }
+    } else {
+      console.log('[ProcessJob] No recipientEmail on case; skipping email send');
+    }
+
     console.log(`[ProcessJob] ✅ Completed case ${caseId} - saved ${savedCount}/${documents.length} markdown documents`);
 
     // CRITICAL: Update final completion status - this is what the frontend checks
-    await updateProgress('Complete', 100, `Successfully generated and saved ${savedCount} documents`);
+    const completionMessage = `Successfully generated and saved ${savedCount} documents${emailSent ? ' (email sent)' : ''}`;
+    await updateProgress('Complete', 100, completionMessage);
 
     return NextResponse.json({
       success: true,
       caseId,
-      message: `Successfully generated ${savedCount} documents`,
+      message: completionMessage,
       documentsGenerated: savedCount,
+      emailSent,
     });
 
   } catch (error: any) {

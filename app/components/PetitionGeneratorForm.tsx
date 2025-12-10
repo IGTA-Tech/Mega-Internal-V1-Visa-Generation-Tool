@@ -813,8 +813,13 @@ export default function PetitionGeneratorForm() {
         setCurrentStage(data.currentStage);
         setCurrentMessage(data.currentMessage);
 
-        if (data.status === 'completed' && data.documents) {
+        // Update documents list whenever documents are available (even if status isn't 'completed' yet)
+        if (data.documents && Array.isArray(data.documents)) {
           setGeneratedDocuments(data.documents);
+        }
+
+        // Transition to complete step when status is completed OR when progress is 100% with documents
+        if (data.status === 'completed' || (data.progress === 100 && data.documents && data.documents.length > 0)) {
           setCurrentStep('complete');
           clearInterval(interval);
         } else if (data.status === 'failed') {
