@@ -54,7 +54,7 @@ export async function GET(
 
           // Get documents from database - check if they exist regardless of status
           // This handles cases where documents are generated but status wasn't updated
-          let documents = null;
+          let documents: any[] = [];
           const { data: docsData, error: docsError } = await supabase
             .from('generated_documents')
             .select('*')
@@ -88,6 +88,8 @@ export async function GET(
               caseData.current_stage = 'Complete';
               caseData.current_message = `Successfully generated ${docsData.length} documents`;
             }
+          } else {
+            console.log(`[Progress] No documents found for ${caseId} yet`);
           }
 
           return NextResponse.json(

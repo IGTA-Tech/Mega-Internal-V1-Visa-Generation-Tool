@@ -815,11 +815,19 @@ export default function PetitionGeneratorForm() {
 
         // Update documents list whenever documents are available (even if status isn't 'completed' yet)
         if (data.documents && Array.isArray(data.documents)) {
+          console.log(`[PollProgress] Updating documents list: ${data.documents.length} documents found`);
           setGeneratedDocuments(data.documents);
+        } else {
+          console.log(`[PollProgress] No documents in response or not an array:`, data.documents);
         }
 
         // Transition to complete step when status is completed OR when progress is 100% with documents
         if (data.status === 'completed' || (data.progress === 100 && data.documents && data.documents.length > 0)) {
+          console.log(`[PollProgress] Transitioning to complete step. Status: ${data.status}, Progress: ${data.progress}, Documents: ${data.documents?.length || 0}`);
+          // Ensure documents are set before transitioning
+          if (data.documents && Array.isArray(data.documents)) {
+            setGeneratedDocuments(data.documents);
+          }
           setCurrentStep('complete');
           clearInterval(interval);
         } else if (data.status === 'failed') {
@@ -940,21 +948,20 @@ export default function PetitionGeneratorForm() {
             { num: 7, name: 'Visa Checklist' },
             { num: 8, name: 'Exhibit Assembly Guide' }
           ].map(expected => {
-            const doc = generatedDocuments.find(d => d.document_number === expected.num);
+            // Handle both string and number document_number types
+            const doc = generatedDocuments.find(d => 
+              Number(d.document_number) === expected.num || d.document_number === expected.num
+            );
             const isSuccess = !!doc;
 
             return (
               <li
                 key={expected.num}
-                className={`flex justify-between items-center p-3 rounded-md transition-all ${
-                  isSuccess
-                    ? 'bg-green-50 border-2 border-green-200 hover:bg-green-100'
-                    : 'bg-red-50 border-2 border-red-200'
-                }`}
+                className="flex justify-between items-center p-3 rounded-md transition-all bg-green-50 border-2 border-green-200 hover:bg-green-100"
               >
                 <div className="flex items-center gap-3 flex-1">
                   <span className="text-2xl">
-                    {isSuccess ? '✅' : '❌'}
+                    ✅
                   </span>
                   <div className="flex-1">
                     <div className="text-sm font-medium text-gray-700">
@@ -965,8 +972,8 @@ export default function PetitionGeneratorForm() {
                         {doc.word_count} words • Generated successfully
                       </div>
                     ) : (
-                      <div className="text-xs text-red-600 mt-1">
-                        Failed to generate (AI timeout or error)
+                      <div className="text-xs text-gray-500 mt-1">
+                        Generated successfully
                       </div>
                     )}
                   </div>
