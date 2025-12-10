@@ -67,9 +67,13 @@ export async function GET(
             documents = docsData;
             console.log(`[Progress] Found ${docsData.length} documents for ${caseId}`);
             
-            // If documents exist but status isn't completed, update it
-            if (caseData.status !== 'completed' && docsData.length >= 8) {
-              console.log(`[Progress] Documents exist but status is ${caseData.status}, updating to completed`);
+            // Only mark as completed if we have ALL 8 documents AND they all have content
+            // This prevents premature completion when documents are still being saved
+            const allDocumentsHaveContent = docsData.every((doc: any) => doc.content && doc.content.length > 0);
+            const hasAll8Documents = docsData.length >= 8;
+            
+            if (caseData.status !== 'completed' && hasAll8Documents && allDocumentsHaveContent) {
+              console.log(`[Progress] All 8 documents exist with content, updating status to completed`);
               await supabase
                 .from('petition_cases')
                 .update({
@@ -87,9 +91,20 @@ export async function GET(
               caseData.progress_percentage = 100;
               caseData.current_stage = 'Complete';
               caseData.current_message = `Successfully generated ${docsData.length} documents`;
+            } else if (hasAll8Documents && !allDocumentsHaveContent) {
+              console.log(`[Progress] Found ${docsData.length} documents but some are missing content - still generating`);
+            } else if (!hasAll8Documents) {
+              console.log(`[Progress] Only ${docsData.length}/8 documents found - still generating`);
             }
           } else {
             console.log(`[Progress] No documents found for ${caseId} yet`);
+          }
+          
+          // If status is 'generating' and we have documents, don't return completed status prematurely
+          // Only return completed if status is explicitly 'completed' OR we have all 8 documents with content
+          if (caseData.status === 'generating' && documents.length > 0 && documents.length < 8) {
+            console.log(`[Progress] Status is 'generating' with ${documents.length}/8 documents - keeping status as generating`);
+            // Keep status as 'generating' - don't change it
           }
 
           return NextResponse.json(
