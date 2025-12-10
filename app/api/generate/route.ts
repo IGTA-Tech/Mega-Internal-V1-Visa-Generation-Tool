@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
             petitioner_name: beneficiaryInfo.petitionerName,
             petitioner_organization: beneficiaryInfo.petitionerOrganization,
             additional_info: beneficiaryInfo.additionalInfo,
+            recipient_email: beneficiaryInfo.recipientEmail,
             status: 'initializing',
             progress_percentage: 0,
             current_stage: 'Queued for processing',

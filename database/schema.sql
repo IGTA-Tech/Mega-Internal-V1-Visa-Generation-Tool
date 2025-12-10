@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS petition_cases (
     completed_at TIMESTAMPTZ,
 
     -- Metadata
+    recipient_email TEXT,
     email_sent BOOLEAN DEFAULT FALSE,
     email_sent_at TIMESTAMPTZ,
 

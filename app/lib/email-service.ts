@@ -1,6 +1,6 @@
 import sgMail from '@sendgrid/mail';
 import { BeneficiaryInfo } from '../types';
-import { convertDocumentsToPDFs } from './pdf-generator';
+import { convertDocumentsToDOCX } from './docx-generator';
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY || '');
 
@@ -9,14 +9,14 @@ export async function sendDocumentsEmail(
   documents: Array<{ name: string; content: string; pageCount: number }>
 ): Promise<boolean> {
   try {
-    // Convert markdown documents to PDFs
-    console.log('Converting documents to PDF format...');
-    const pdfDocuments = await convertDocumentsToPDFs(documents);
+    // Convert markdown documents to DOCX files
+    console.log('Converting documents to DOCX format...');
+    const docxDocuments = await convertDocumentsToDOCX(documents);
 
-    const attachments = pdfDocuments.map((doc) => ({
+    const attachments = docxDocuments.map((doc) => ({
       content: doc.buffer.toString('base64'),
       filename: doc.name,
-      type: 'application/pdf',
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       disposition: 'attachment',
     }));
 
@@ -138,17 +138,17 @@ export async function sendDocumentsEmail(
       </ul>
     </div>
 
-    <h3>📎 Documents Attached (PDF Format)</h3>
-    <p>All eight documents are attached to this email as <strong>professional PDF files</strong>. You can:</p>
+    <h3>📎 Documents Attached (DOCX Format)</h3>
+    <p>All eight documents are attached to this email as <strong>editable DOCX (Word) files</strong>. You can:</p>
     <ul>
-      <li>Open and review each PDF document immediately</li>
-      <li>Share with your immigration attorney</li>
-      <li>Print for physical review and annotation</li>
-      <li>Use as foundation for USCIS petition</li>
-      <li>Import into Word/Adobe for editing if needed</li>
+      <li>Open and edit each document in Microsoft Word, Google Docs, or any word processor</li>
+      <li>Customize content, add your information, and make revisions</li>
+      <li>Share with your immigration attorney for review and editing</li>
+      <li>Export to PDF when ready for submission</li>
+      <li>Use as foundation for your USCIS petition with full editing capabilities</li>
     </ul>
     <p style="background: #dbeafe; padding: 10px; border-radius: 5px; margin-top: 10px;">
-      <strong>💡 Tip:</strong> PDFs are ready to print and submit. They maintain professional formatting and are universally compatible.
+      <strong>💡 Tip:</strong> DOCX files are fully editable. You can modify any content, add your personal information, and customize the documents to fit your specific case before submitting to USCIS.
     </p>
 
     <h3>⚠️ IMPORTANT: Next Steps</h3>
