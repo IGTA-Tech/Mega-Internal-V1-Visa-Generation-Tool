@@ -1,0 +1,59 @@
+{
+  "documentNumber": 7,
+  "documentName": "Visa Checklist",
+  "description": "Comprehensive compliance tracking checklist",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 6144,
+  "temperature": 0.2,
+  "targetLength": {
+    "pages": "8-12",
+    "words": "4000-6000"
+  },
+  "format": "Checkbox checklist with initials/date fields",
+  "structure": {
+    "sections": [
+      "Section 1: Forms and Filing Requirements",
+      "Section 2: Petition Documents",
+      "Section 3: Regulatory Criteria Evidence",
+      "Section 4: Exhibit Organization",
+      "Section 5: Visa-Specific Requirements",
+      "Section 6: Supporting Evidence",
+      "Section 7: Final Assembly",
+      "Section 8: Pre-Filing Review",
+      "Section 9: Post-Filing Tasks"
+    ]
+  },
+  "documentPackages": {
+    "4-document": [
+      "Document 1: Comprehensive Analysis",
+      "Document 2: Publication Significance Analysis",
+      "Document 3: URL Reference Document",
+      "Document 4: Legal Brief"
+    ],
+    "9-document": [
+      "Document 1: Comprehensive Analysis",
+      "Document 2: Publication Significance Analysis",
+      "Document 3: URL Reference Document",
+      "Document 4: Legal Brief",
+      "Document 5: Evidence Gap Analysis (Internal - DO NOT SUBMIT)",
+      "Document 6: USCIS Cover Letter",
+      "Document 7: Visa Checklist",
+      "Document 8: Exhibit Assembly Guide",
+      "Document 9: USCIS Officer Rating Report"
+    ]
+  },
+  "visaSpecificRequirements": {
+    "O-1A": ["Consultation/Advisory Opinion", "Itinerary Requirement", "Agent Petition (if applicable)", "Extraordinary Ability Evidence"],
+    "O-1B": ["Consultation/Advisory Opinion", "Arts vs. Motion Picture/TV", "Itinerary Requirement", "Distinction Evidence"],
+    "P-1A": ["Consultation/Advisory Opinion", "International Recognition Evidence", "Competition/Event Documentation", "Team Petitions (if applicable)"],
+    "EB-1A": ["Two-Step Kazarian Analysis", "Regulatory Criteria (3 of 10)", "Intent to Continue Work", "National Interest", "Self-Petition Ability"]
+  },
+  "features": [
+    "Checkbox format with initials",
+    "Visa-specific requirements",
+    "Translation requirements",
+    "Quality assurance steps",
+    "Post-filing tracking"
+  ],
+  "source": "mega-visa-petition-generator-v4/app/lib/documents/visa-checklist.ts"
+}

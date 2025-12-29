@@ -1,0 +1,62 @@
+{
+  "documentNumber": 2,
+  "documentName": "Publication Significance Analysis",
+  "description": "40+ page tiered media coverage analysis with reach metrics",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 20480,
+  "temperature": 0.3,
+  "targetLength": {
+    "pages": 40,
+    "words": 20000
+  },
+  "structure": {
+    "parts": 7,
+    "sections": [
+      "Executive Summary",
+      "Part 1: Methodology",
+      "Part 2: Publication-by-Publication Analysis",
+      "Part 3: Aggregate Analysis",
+      "Part 4: Comparative Analysis",
+      "Part 5: USCIS Standards Analysis",
+      "Part 6: Tier-Based Cumulative Analysis",
+      "Part 7: Conclusions"
+    ]
+  },
+  "tierSystem": {
+    "tier1": {
+      "name": "Gold Standard",
+      "weight": "Premium",
+      "pagesPerSource": "2-4",
+      "examples": ["ESPN", "BBC", "CNN", "NYT", "WSJ", "Reuters"]
+    },
+    "tier2": {
+      "name": "Strong/Industry",
+      "weight": "High",
+      "pagesPerSource": "1-2",
+      "examples": ["UFC.com", "MMA Junkie", "Sherdog", "LA Times"]
+    },
+    "tier3": {
+      "name": "Supplementary",
+      "weight": "Moderate",
+      "pagesPerSource": "0.5-1",
+      "examples": ["Specialist blogs", "Local newspapers"]
+    }
+  },
+  "reachEstimates": {
+    "ESPN": "150M monthly",
+    "BBC Sport": "100M monthly",
+    "CNN": "200M monthly",
+    "NYT": "100M monthly",
+    "UFC.com": "50M monthly",
+    "MMA Junkie": "10M monthly",
+    "Sherdog": "5M monthly"
+  },
+  "features": [
+    "Tier-based source classification",
+    "Realistic reach estimates",
+    "Quality over quantity emphasis",
+    "Audience overlap consideration",
+    "USCIS standards alignment"
+  ],
+  "source": "mega-internal-v1-visa-generation-tool/app/lib/document-generator.ts"
+}

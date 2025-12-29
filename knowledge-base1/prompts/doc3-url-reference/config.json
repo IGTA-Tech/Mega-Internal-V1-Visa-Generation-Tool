@@ -1,0 +1,42 @@
+{
+  "documentNumber": 3,
+  "documentName": "URL Reference Document",
+  "description": "Comprehensive catalog of all URLs and evidence sources with archive.org links",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 12288,
+  "temperature": 0.2,
+  "targetLength": {
+    "pages": "10-20",
+    "words": "5000-10000"
+  },
+  "structure": {
+    "parts": 11,
+    "sections": [
+      "I. Introduction",
+      "II. URL Catalog Summary",
+      "III. User-Provided Evidence URLs",
+      "IV. Research-Discovered Sources",
+      "V. Sources by Criterion",
+      "VI. Source Credibility Analysis",
+      "VII. URL Verification Guide",
+      "VIII. Archive.org Preservation Status",
+      "IX. Domain Credibility Index",
+      "X. Quick Reference Index",
+      "XI. Conclusion"
+    ]
+  },
+  "features": [
+    "Archive.org preservation links",
+    "Tier-based source organization",
+    "Credibility assessment for each source",
+    "Criterion mapping",
+    "Verification instructions for USCIS officers"
+  ],
+  "urlCategories": [
+    "User-Provided URLs",
+    "Research-Discovered URLs (Tier 1)",
+    "Research-Discovered URLs (Tier 2)",
+    "Research-Discovered URLs (Tier 3)"
+  ],
+  "source": "mega-visa-petition-generator-v4/app/lib/documents/url-reference.ts"
+}

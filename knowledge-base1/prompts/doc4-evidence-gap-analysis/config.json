@@ -1,0 +1,60 @@
+{
+  "documentNumber": 4,
+  "documentName": "Evidence Strategy & Argument Bridge",
+  "description": "CONDUIT document - bridges evidence to legal arguments, identifies gaps, prepares argument strategy",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 16384,
+  "temperature": 0.4,
+  "targetLength": {
+    "pages": "20-35",
+    "words": "10000-17500"
+  },
+  "internalOnly": true,
+  "doNotSubmitToUSCIS": true,
+  "purpose": "Bridge between evidence gathering (Docs 1-3) and Legal Brief (Doc 5)",
+  "keyFunction": "Be brutally honest about weaknesses FIRST, then organize evidence for strongest arguments",
+  "structure": {
+    "parts": 11,
+    "sections": [
+      "1. Executive Assessment",
+      "2. Evidence Inventory by Criterion",
+      "3. Gap Analysis",
+      "4. Argument Strategy Bridge",
+      "5. Evidence-to-Argument Mapping",
+      "6. Comparable Evidence Strategy",
+      "7. RFE Prediction & Preemptive Response",
+      "8. Expert Letter Strategy",
+      "9. Legal Brief Outline",
+      "10. Action Items Before Filing",
+      "11. Document Status"
+    ]
+  },
+  "inputs": [
+    "Document 1: Comprehensive Analysis",
+    "Document 2: Publication Significance Analysis",
+    "Document 3: URL Reference Document"
+  ],
+  "outputs": [
+    "Argument strategy for Document 5 (Legal Brief)",
+    "Criteria ranking by strength",
+    "Evidence-to-argument mapping",
+    "RFE preemptive responses",
+    "Legal Brief outline"
+  ],
+  "filingRecommendations": [
+    "FILE NOW - Case is strong",
+    "FILE WITH CAUTION - Minor gaps exist",
+    "STRENGTHEN FIRST - Significant gaps require attention",
+    "MAJOR REVISION - Substantial evidence needed"
+  ],
+  "features": [
+    "Brutally honest gap analysis",
+    "Criteria strength ranking",
+    "Argument strategy preparation",
+    "Evidence-to-argument mapping",
+    "RFE prediction and preemptive responses",
+    "Legal Brief outline generation",
+    "Action items checklist"
+  ],
+  "source": "Updated based on Attorney Seward workflow guidance"
+}

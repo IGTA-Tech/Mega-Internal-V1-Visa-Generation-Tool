@@ -11,6 +11,7 @@ import {
   logError,
 } from './retry-helper';
 import { callOpenAI, isOpenAIConfigured } from './openai-client';
+import { loadPrompt, getDocumentType, interpolatePrompt } from './prompt-loader';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const http = require('http');
@@ -110,6 +111,89 @@ export async function callAIWithFallback(
  */
 async function retryWithBackoff<T>(claudeCall: () => Promise<T>): Promise<T> {
   return await retryHelper(claudeCall);
+}
+
+// ============================================
+// PROMPT LOADING HELPER
+// ============================================
+
+/**
+ * Helper function to load prompt from knowledge-base1 and prepare it for use
+ * @param docNumber - Document number (1-9)
+ * @param variables - Variables to interpolate in the prompt
+ * @returns Object with systemPrompt, userPrompt, maxTokens, temperature
+ */
+function loadDocumentPrompt(
+  docNumber: number,
+  variables: { [key: string]: any }
+): {
+  systemPrompt: string;
+  userPrompt: string;
+  maxTokens: number;
+  temperature: number;
+} {
+  try {
+    const loadedPrompt = loadPrompt(getDocumentType(docNumber));
+    
+    // Extract system prompt (remove markdown headers if present)
+    // Use [\s\S] instead of . with s flag for ES2017 compatibility
+    let systemPrompt = loadedPrompt.systemPrompt;
+    const systemPromptMatch = systemPrompt.match(/## System Prompt\s*\n\n([\s\S]*?)(?:\n\n---|\n\n##|$)/);
+    if (systemPromptMatch && systemPromptMatch[1]) {
+      systemPrompt = systemPromptMatch[1].trim();
+    } else {
+      // If no match, try to find the first meaningful line after "## System Prompt"
+      const systemPromptIndex = systemPrompt.indexOf('## System Prompt');
+      if (systemPromptIndex !== -1) {
+        const afterHeader = systemPrompt.substring(systemPromptIndex);
+        const lines = afterHeader.split('\n').slice(2); // Skip header and blank line
+        const firstContentLine = lines.find(line => line.trim() && !line.trim().startsWith('#'));
+        if (firstContentLine) {
+          systemPrompt = firstContentLine.trim();
+        }
+      }
+    }
+    
+    // Use user prompt template if available, otherwise extract from system prompt file
+    let userPromptTemplate = loadedPrompt.userPromptTemplate;
+    if (!userPromptTemplate) {
+      // Try to extract user prompt from system prompt file
+      // Use [\s\S] instead of . with s flag for ES2017 compatibility
+      const userPromptMatch = loadedPrompt.systemPrompt.match(/## User Prompt Template\s*```\s*\n([\s\S]*?)```/);
+      if (userPromptMatch && userPromptMatch[1]) {
+        userPromptTemplate = userPromptMatch[1].trim();
+      }
+    }
+    
+    // Interpolate variables in user prompt
+    let userPrompt: string;
+    if (userPromptTemplate) {
+      userPrompt = interpolatePrompt(userPromptTemplate, variables);
+    } else {
+      // Fallback: use system prompt as base, but this shouldn't happen in normal flow
+      userPrompt = systemPrompt;
+    }
+    
+    // Extract a clean system prompt (first meaningful line, or first 200 chars)
+    const cleanSystemPrompt = systemPrompt.split('\n').find(line => line.trim() && !line.trim().startsWith('#')) 
+      || systemPrompt.substring(0, 200).split('\n')[0] 
+      || systemPrompt;
+    
+    return {
+      systemPrompt: cleanSystemPrompt.trim(),
+      userPrompt,
+      maxTokens: loadedPrompt.config.maxTokens || 16384,
+      temperature: loadedPrompt.config.temperature || 0.3,
+    };
+  } catch (error) {
+    console.warn(`[loadDocumentPrompt] Failed to load prompt for doc${docNumber}, using defaults:`, error);
+    return {
+      systemPrompt: '',
+      userPrompt: '',
+      maxTokens: 16384,
+      temperature: 0.3,
+    };
+  }
 }
 
 // ============================================
@@ -452,16 +536,43 @@ async function generateComprehensiveAnalysis(
   progressCallback?: ProgressCallback
 ): Promise<string> {
   try {
-  const urlContext = urls
-    .map(
-      (url, i) =>
-        `URL ${i + 1}: ${url.url}\nTitle: ${url.title}\nContent: ${url.content.substring(0, 2000)}...\n`
-    )
-    .join('\n\n');
+    const urlContext = urls
+      .map(
+        (url, i) =>
+          `URL ${i + 1}: ${url.url}\nTitle: ${url.title}\nContent: ${url.content.substring(0, 2000)}...\n`
+      )
+      .join('\n\n');
 
-  const prompt = `You are an expert immigration law analyst specializing in ${beneficiaryInfo.visaType} visa petitions.
+    // Load prompt from knowledge-base1
+    const promptConfig = loadDocumentPrompt(1, {
+      beneficiaryInfo: beneficiaryInfo,
+      visaType: beneficiaryInfo.visaType,
+      fullName: beneficiaryInfo.fullName,
+      fieldOfProfession: beneficiaryInfo.fieldOfProfession,
+      background: beneficiaryInfo.background,
+      additionalInfo: beneficiaryInfo.additionalInfo || 'None provided',
+      fileEvidence: fileEvidence || 'No documents uploaded',
+      urlContext: urlContext,
+      knowledgeBase: knowledgeBase.substring(0, 50000),
+    });
 
-BENEFICIARY INFORMATION:
+    // Build user prompt - use loaded prompt if available, otherwise use fallback
+    let userPrompt: string;
+    let systemPrompt: string;
+    let maxTokens: number;
+    let temperature: number;
+
+    if (promptConfig.userPrompt && promptConfig.userPrompt.trim().length > 0) {
+      userPrompt = promptConfig.userPrompt;
+      systemPrompt = promptConfig.systemPrompt || `You are an expert immigration law analyst specializing in ${beneficiaryInfo.visaType} visa petitions.`;
+      maxTokens = promptConfig.maxTokens;
+      temperature = promptConfig.temperature;
+    } else {
+      // Fallback prompt structure
+      systemPrompt = `You are an expert immigration law analyst specializing in ${beneficiaryInfo.visaType} visa petitions.`;
+      maxTokens = 20480;
+      temperature = 0.3;
+      userPrompt = `BENEFICIARY INFORMATION:
 - Name: ${beneficiaryInfo.fullName}
 - Visa Type: ${beneficiaryInfo.visaType}
 - Field/Profession: ${beneficiaryInfo.fieldOfProfession}
@@ -547,12 +658,13 @@ CRITICAL REQUIREMENTS:
 **OUTPUT FORMAT**: Generate the FULL, UNABBREVIATED document. Do NOT summarize or shorten. Write as if this is the complete final document that will be given to an attorney.
 
 Generate the COMPLETE comprehensive analysis now (aim for maximum detail and length):`;
+    }
 
     const textResponse = await callAIWithFallback(
-      prompt,
-      '',
-      20480,
-      0.3
+      userPrompt,
+      systemPrompt,
+      maxTokens,
+      temperature
     );
 
     return textResponse;

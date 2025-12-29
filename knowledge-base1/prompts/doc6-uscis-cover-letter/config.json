@@ -1,0 +1,66 @@
+{
+  "documentNumber": 6,
+  "documentName": "USCIS Cover Letter",
+  "description": "2-3 page professional introduction to petition package",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 4096,
+  "temperature": 0.2,
+  "targetLength": {
+    "pages": "2-3",
+    "words": "800-1200"
+  },
+  "format": "Standard business letter",
+  "structure": {
+    "sections": [
+      "Letterhead placeholder",
+      "Date and service center address",
+      "RE: line with petition details",
+      "Introduction",
+      "Beneficiary Summary",
+      "Criteria Claimed",
+      "Evidence Organization",
+      "Petition Roadmap",
+      "Processing Request",
+      "Conclusion",
+      "Signature Block"
+    ]
+  },
+  "serviceCenters": {
+    "O-1A": {
+      "name": "California Service Center",
+      "address": "P.O. Box 10129, Laguna Niguel, CA 92607-1012"
+    },
+    "O-1B": {
+      "name": "California Service Center",
+      "address": "P.O. Box 10129, Laguna Niguel, CA 92607-1012"
+    },
+    "P-1A": {
+      "name": "California Service Center",
+      "address": "P.O. Box 10129, Laguna Niguel, CA 92607-1012"
+    },
+    "EB-1A": {
+      "name": "Texas Service Center",
+      "address": "P.O. Box 852211, Mesquite, TX 75185-2211"
+    }
+  },
+  "filingFees": {
+    "O-1A": "$460",
+    "O-1B": "$460",
+    "P-1A": "$460",
+    "EB-1A": "$700",
+    "premiumProcessing": "$2,805"
+  },
+  "forms": {
+    "O-1A": "Form I-129",
+    "O-1B": "Form I-129",
+    "P-1A": "Form I-129",
+    "EB-1A": "Form I-140"
+  },
+  "features": [
+    "Professional formal tone",
+    "Clear document list",
+    "Petition roadmap",
+    "Signature block placeholders"
+  ],
+  "source": "mega-visa-petition-generator-v4/app/lib/documents/uscis-cover-letter.ts"
+}

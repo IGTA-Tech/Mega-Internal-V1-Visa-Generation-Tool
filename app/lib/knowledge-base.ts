@@ -9,72 +9,122 @@ export interface KnowledgeBaseFile {
   priority: number;
 }
 
-// Define the optimal reading order for each visa type
-const VISA_TYPE_FILES: Record<VisaType, string[]> = {
-  'O-1A': [
-    'O1A_O1B_P1A_EB1A_profesional_evaluationRAG.md', // Section 3: O-1A Criteria
-    'O-1a knowledge base.md', // Complete O-1A knowledge
-    'O-1a visa complete guide.md',
-    'O-1A Evlaution Rag.md',
-    'DIY O1A RAG.md',
-    'Master mega prompt Visa making.md',
-    'policy memeos visas EB1a and O-1.md',
-    'policy memeos visas.md',
-  ],
-  'O-1B': [
-    'O1A_O1B_P1A_EB1A_profesional_evaluationRAG.md', // Section 4: O-1B Criteria
-    'O-1B knowledge base.md',
-    'DIY O1B Rag.md',
-    'Master mega prompt Visa making.md',
-    'policy memeos visas.md',
-  ],
-  'P-1A': [
-    'O1A_O1B_P1A_EB1A_profesional_evaluationRAG.md', // Section 5: P-1A Criteria
-    'P-1 A Knowledge Base.md',
-    'P-1A Itienrary document.md',
-    'DIY P1A RAG.md',
-    'Master mega prompt Visa making.md',
-    'policy memeos visas.md',
-  ],
-  'EB-1A': [
-    'O1A_O1B_P1A_EB1A_profesional_evaluationRAG.md', // Section 2: EB-1A Criteria
-    'EB-1A knowledge base.md',
-    'EB1A_petition_Brief.md',
-    'EB1A_petition_Brief.mddive analysis example.md', // GOLD STANDARD
-    'EB1A_Tech_Marathon_Runner_Comprehensive_Analysis (1).md',
-    'Master mega prompt Visa making.md',
-    'policy memeos visas EB1a and O-1.md',
-  ],
-  'EB-2 NIW': [
-    'O1A_O1B_P1A_EB1A_profesional_evaluationRAG.md',
-    'Master mega prompt Visa making.md',
-    'policy memeos visas.md',
-  ],
+// Define the optimal reading order for each visa type using knowledge-base1 structure
+// Files are organized in knowledge-base1/knowledge-base/{visaType}/ and knowledge-base1/knowledge-base/shared/
+const VISA_TYPE_FILES: Record<VisaType, { folder: string; files: string[] }> = {
+  'O-1A': {
+    folder: 'O-1A',
+    files: [
+      'professional-evaluation-RAG.md', // From shared - contains O-1A section
+      'O-1A-knowledge-base.md',
+      'O-1A-visa-complete-guide.md',
+      'O-1A-evaluation-RAG.md',
+      'DIY-O1A-RAG.md',
+    ],
+  },
+  'O-1B': {
+    folder: 'O-1B',
+    files: [
+      'professional-evaluation-RAG.md', // From shared - contains O-1B section
+      'O-1B-knowledge-base.md',
+      'DIY-O1B-RAG.md',
+    ],
+  },
+  'P-1A': {
+    folder: 'P-1A',
+    files: [
+      'professional-evaluation-RAG.md', // From shared - contains P-1A section
+      'P-1A-knowledge-base.md',
+      'P-1A-itinerary-document.md',
+      'DIY-P1A-RAG.md',
+    ],
+  },
+  'EB-1A': {
+    folder: 'EB-1A',
+    files: [
+      'professional-evaluation-RAG.md', // From shared - contains EB-1A section
+      'EB-1A-knowledge-base.md',
+      'EB1A-petition-brief.md',
+      'EB1A-dive-analysis-example.md', // GOLD STANDARD
+    ],
+  },
+  'EB-2 NIW': {
+    folder: 'shared', // EB-2 NIW uses shared files
+    files: [
+      'professional-evaluation-RAG.md',
+      'uscis-regulations.md',
+    ],
+  },
 };
 
+// Shared files that should be included for all visa types
+const SHARED_FILES = [
+  'master-mega-prompt.md',
+  'policy-memos-visas.md',
+  'uscis-regulations.md',
+  'uscis-officer-perspective.md',
+  'rfe-response-guide.md',
+  'red-flag-identification.md',
+  'weakness-mitigation.md',
+  'expert-letter-strategy.md',
+  'contradiction-handling.md',
+  'source-independence-verification.md',
+];
+
 export async function getKnowledgeBaseFiles(visaType: VisaType): Promise<KnowledgeBaseFile[]> {
-  const knowledgeBasePath = path.join(process.cwd(), 'knowledge-base');
-  const fileNames = VISA_TYPE_FILES[visaType];
+  const knowledgeBasePath = path.join(process.cwd(), 'knowledge-base1', 'knowledge-base');
+  const visaConfig = VISA_TYPE_FILES[visaType];
   const files: KnowledgeBaseFile[] = [];
+  let priority = 1;
 
-  for (let i = 0; i < fileNames.length; i++) {
-    const fileName = fileNames[i];
-    const filePath = path.join(knowledgeBasePath, fileName);
+  // Load visa-specific files
+  if (visaConfig) {
+    const visaFolder = path.join(knowledgeBasePath, visaConfig.folder);
+    
+    for (const fileName of visaConfig.files) {
+      // Check if file is in shared folder (like professional-evaluation-RAG.md)
+      let filePath = path.join(visaFolder, fileName);
+      if (!fs.existsSync(filePath) && fileName === 'professional-evaluation-RAG.md') {
+        // Try shared folder
+        filePath = path.join(knowledgeBasePath, 'shared', fileName);
+      }
 
+      try {
+        if (fs.existsSync(filePath)) {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          files.push({
+            name: `${visaConfig.folder}/${fileName}`,
+            path: filePath,
+            content,
+            priority: priority++,
+          });
+        } else {
+          console.warn(`Knowledge base file not found: ${filePath}`);
+        }
+      } catch (error) {
+        console.error(`Error reading knowledge base file ${filePath}:`, error);
+      }
+    }
+  }
+
+  // Load shared files
+  const sharedFolder = path.join(knowledgeBasePath, 'shared');
+  for (const fileName of SHARED_FILES) {
+    const filePath = path.join(sharedFolder, fileName);
     try {
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf-8');
         files.push({
-          name: fileName,
+          name: `shared/${fileName}`,
           path: filePath,
           content,
-          priority: i + 1, // Priority based on order
+          priority: priority++,
         });
       } else {
-        console.warn(`Knowledge base file not found: ${fileName}`);
+        console.warn(`Shared knowledge base file not found: ${filePath}`);
       }
     } catch (error) {
-      console.error(`Error reading knowledge base file ${fileName}:`, error);
+      console.error(`Error reading shared knowledge base file ${filePath}:`, error);
     }
   }
 

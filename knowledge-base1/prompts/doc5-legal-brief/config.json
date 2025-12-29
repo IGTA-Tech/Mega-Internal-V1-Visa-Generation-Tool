@@ -1,0 +1,70 @@
+{
+  "documentNumber": 5,
+  "documentName": "Legal Brief",
+  "description": "Formal petition following DIY template with CFR citations - uses Document 4 strategy",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 20480,
+  "temperature": 0.3,
+  "targetLength": {
+    "pages": "30-50",
+    "words": "15000-25000"
+  },
+  "inputs": [
+    "Document 1: Comprehensive Analysis",
+    "Document 2: Publication Significance Analysis",
+    "Document 3: URL Reference Document",
+    "Document 4: Evidence Strategy & Argument Bridge (PRIMARY INPUT)"
+  ],
+  "purpose": "Execute the argument strategy prepared in Document 4 as formal legal brief",
+  "structure": {
+    "criterionFormat": {
+      "required": [
+        "Criterion Header with Checkboxes",
+        "Regulatory Standard Block",
+        "Establishment of Elements in Evidence",
+        "Comparable Evidence Theory (O-1A/O-1B/EB-1A only)",
+        "Consideration of Evidence Closing"
+      ],
+      "pagesPerCriterion": "3-5"
+    }
+  },
+  "cfrReferences": {
+    "O-1A": {
+      "baseSection": "8 CFR 214.2(o)(3)(iii)",
+      "comparableEvidence": "8 CFR 214.2(o)(3)(v)"
+    },
+    "O-1B": {
+      "baseSection": "8 CFR 214.2(o)(3)(iv)",
+      "comparableEvidence": "8 CFR 214.2(o)(3)(v)"
+    },
+    "P-1A": {
+      "baseSection": "8 CFR 214.2(p)(4)(ii)",
+      "comparableEvidence": null
+    },
+    "EB-1A": {
+      "baseSection": "8 CFR 204.5(h)(3)",
+      "comparableEvidence": "8 CFR 204.5(h)(4)"
+    }
+  },
+  "diyTemplateEnforcement": true,
+  "checkboxFormat": true,
+  "features": [
+    "Executes Document 4 argument strategy",
+    "Exact USCIS-compliant format",
+    "CFR citations for each criterion",
+    "Checkbox format for criterion selection",
+    "Comparable evidence sections (where applicable)",
+    "Exhibit references throughout",
+    "Preemptive RFE defenses from Doc 4",
+    "Criteria ordered by strength (from Doc 4)"
+  ],
+  "prohibitedBehaviors": [
+    "Skipping checkbox format",
+    "Using vague language without evidence",
+    "Omitting Comparable Evidence for O-1A/O-1B/EB-1A",
+    "Including Comparable Evidence for P-1A",
+    "Incorrect CFR citations",
+    "Ignoring Document 4 argument strategy"
+  ],
+  "source": "Updated based on Attorney Seward workflow guidance"
+}

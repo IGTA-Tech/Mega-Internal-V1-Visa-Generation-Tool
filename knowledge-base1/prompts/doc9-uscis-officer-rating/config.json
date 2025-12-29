@@ -1,0 +1,78 @@
+{
+  "documentNumber": 9,
+  "documentName": "USCIS Officer Rating Report",
+  "description": "Devil's Advocate evaluation - critical assessment from officer perspective",
+  "uniqueFeature": "V4 EXCLUSIVE - Not in other repositories",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 16384,
+  "temperature": 0.4,
+  "targetLength": {
+    "pages": "20-30",
+    "words": "10000-15000"
+  },
+  "internalOnly": true,
+  "doNotSubmitToUSCIS": true,
+  "systemPersona": "Senior USCIS Adjudications Officer with 15+ years experience",
+  "structure": {
+    "sections": [
+      "Cover Page",
+      "I. Executive Assessment",
+      "II. Regulatory Framework Compliance",
+      "III. Criterion-by-Criterion Devil's Advocate Analysis",
+      "IV. Evidence Quality Assessment",
+      "V. Comparative Analysis",
+      "VI. RFE Prediction Analysis",
+      "VII. Denial Risk Analysis",
+      "VIII. Officer Recommendation Summary",
+      "IX. Scoring Matrix",
+      "X. Final Officer Notes"
+    ]
+  },
+  "ratingScales": {
+    "criterionRatings": ["Strong", "Adequate", "Weak", "Insufficient", "Not Claimed"],
+    "overallRatings": ["Approve", "RFE Likely", "Denial Risk"],
+    "recommendedActions": ["File Now", "Delay and Strengthen", "Major Revision Required"]
+  },
+  "scoringMatrix": {
+    "categories": [
+      {"name": "Evidence Quality", "weight": "25%"},
+      {"name": "Criteria Coverage", "weight": "25%"},
+      {"name": "Documentation", "weight": "15%"},
+      {"name": "Credibility", "weight": "15%"},
+      {"name": "Comparative Standing", "weight": "10%"},
+      {"name": "Presentation", "weight": "10%"}
+    ],
+    "interpretation": {
+      "85-100": "Strong approval likelihood",
+      "70-84": "Approval likely, minor RFE possible",
+      "55-69": "RFE likely, approval uncertain",
+      "40-54": "Significant RFE risk, consider strengthening",
+      "below 40": "Major revision recommended"
+    }
+  },
+  "evaluationMindset": [
+    "Apply preponderance of evidence standard rigorously",
+    "Consider what evidence is MISSING",
+    "Identify conclusory arguments without support",
+    "Flag evidence that wouldn't survive Kazarian two-step",
+    "Note claims lacking independent corroboration",
+    "Think like skeptical adjudicator"
+  ],
+  "features": [
+    "Brutally honest assessment",
+    "RFE trigger identification",
+    "Denial risk analysis",
+    "Probability estimates",
+    "Priority action items",
+    "Scoring matrix with weighted categories"
+  ],
+  "criticalInstructions": [
+    "BE BRUTALLY HONEST",
+    "Identify EVERY potential weakness",
+    "Think like skeptical adjudicator",
+    "Provide SPECIFIC, ACTIONABLE recommendations",
+    "Give realistic probability assessments",
+    "Don't sugarcoat - find problems BEFORE filing"
+  ],
+  "source": "mega-visa-petition-generator-v4/app/lib/documents/uscis-officer-rating.ts"
+}

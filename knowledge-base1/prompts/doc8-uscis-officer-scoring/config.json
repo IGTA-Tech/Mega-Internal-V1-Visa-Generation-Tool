@@ -1,0 +1,52 @@
+{
+  "documentNumber": 8,
+  "documentName": "USCIS Officer Scoring Report",
+  "description": "Devil's Advocate evaluation from skeptical USCIS officer perspective",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 16384,
+  "temperature": 0.4,
+  "targetLength": {
+    "pages": "15-25",
+    "words": "7500-12500"
+  },
+  "internalOnly": true,
+  "doNotSubmitToUSCIS": true,
+  "purpose": "Identify weaknesses before filing through skeptical officer simulation",
+  "persona": "Senior USCIS Adjudications Officer with 15+ years experience",
+  "inputs": [
+    "Document 1: Comprehensive Analysis",
+    "Document 2: Publication Significance Analysis",
+    "Document 3: URL Reference Document",
+    "Document 4: Evidence Strategy & Argument Bridge",
+    "Document 5: Legal Brief"
+  ],
+  "outputs": [
+    "Overall score (0-100)",
+    "Approval/RFE/Denial probabilities",
+    "Criterion-by-criterion ratings",
+    "Red flags identified",
+    "RFE predictions with draft language",
+    "Actionable recommendations"
+  ],
+  "scoringMatrix": {
+    "evidenceQuality": 25,
+    "criteriaCoverage": 25,
+    "documentation": 15,
+    "credibility": 15,
+    "comparativeStanding": 10,
+    "presentation": 10
+  },
+  "verdictOptions": [
+    "APPROVE",
+    "APPROVE WITH CONDITIONS",
+    "REQUEST ADDITIONAL EVIDENCE",
+    "CONCERNS NOTED",
+    "LIKELY DENY"
+  ],
+  "cloudRunDeployment": {
+    "repository": "IGTA-Tech/uscis-scoring-tool-cloudrun",
+    "hasDockerfile": true,
+    "hasCloudbuild": true
+  },
+  "source": "Based on uscis-scoring-tool-cloudrun repository"
+}

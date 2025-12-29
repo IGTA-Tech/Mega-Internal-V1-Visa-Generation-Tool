@@ -1,0 +1,43 @@
+{
+  "documentNumber": 1,
+  "documentName": "Comprehensive Analysis",
+  "description": "75+ page criterion-by-criterion analysis with forensic evidence weighting",
+  "model": "claude-sonnet-4-5-20250929",
+  "maxTokens": 20480,
+  "temperature": 0.3,
+  "targetLength": {
+    "pages": 75,
+    "words": 40000
+  },
+  "structure": {
+    "parts": 10,
+    "sections": [
+      "Executive Summary",
+      "Part 1: Visa Type Determination",
+      "Part 2: Regulatory Framework",
+      "Part 3: Criterion-by-Criterion Analysis",
+      "Part 4: Evidence Mapping",
+      "Part 5: Scoring Summary",
+      "Part 6: Strengths Analysis",
+      "Part 7: Weaknesses & Gaps",
+      "Part 8: Approval Probability Assessment",
+      "Part 9: Recommendations",
+      "Part 10: Conclusion"
+    ]
+  },
+  "visaTypes": ["O-1A", "O-1B", "P-1A", "EB-1A"],
+  "criteriaPages": {
+    "O-1A": "8 criteria, 5-10 pages each",
+    "O-1B": "6 criteria, 5-10 pages each",
+    "P-1A": "5 criteria, 5-10 pages each",
+    "EB-1A": "10 criteria, 5-10 pages each"
+  },
+  "features": [
+    "Forensic evidence weighting with point-based scoring",
+    "Approval probability estimates with statistical backing",
+    "Comparative analysis to field norms",
+    "URL-specific analysis throughout",
+    "Detailed weakness mitigation strategies"
+  ],
+  "source": "mega-internal-v1-visa-generation-tool/app/lib/document-generator.ts"
+}
